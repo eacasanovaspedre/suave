@@ -208,8 +208,8 @@ module Compression =
           |> Array.sortBy (fun fi -> fi.LastWriteTimeUtc)
         // The reverse of the cache: which entry, if any, hands out a given file.
         let keysByPath = Dictionary<string, struct (string * string)>(StringComparer.Ordinal)
-        for KeyValue(k, (path, _)) in Globals.compressedFilesMap do
-          keysByPath.[path] <- k
+for KeyValue(k, (path, _)) in Globals.compressedFilesMap do
+  keysByPath.[Path.GetFullPath path] <- k
         let now = DateTime.UtcNow
         let overBound = files.Length - (max 0 maxFiles)
         for i in 0 .. files.Length - 1 do
