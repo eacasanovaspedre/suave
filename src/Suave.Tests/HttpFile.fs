@@ -246,6 +246,53 @@ let ``obsolete compressed artifacts`` cfg =
         Expect.equal (files |> List.filter File.Exists) [ files.[3]; files.[4] ]
           "the two newest files should be the ones kept")
 
+    testCase "a path that cannot be deleted takes one retry slot, not one per sweep" <| fun _ ->
+      withTempDir (fun dir ->
+        // A directory is a path `File.Delete` can never remove, on any
+        // platform; it stands in for the file that refuses to go away.
+        let stubborn = Path.Combine(dir, "stubborn")
+        Directory.CreateDirectory stubborn |> ignore
+        Expect.isFalse (Suave.Compression.tryDelete stubborn) "the path cannot be deleted"
+        let queued = Suave.Compression.pendingDeletionCount ()
+        // Offered again by hand, and met again by as many sweeps as we care
+        // to run - each of which retries it and puts it back: it must still
+        // hold exactly one slot in the bounded retry queue.
+        Suave.Compression.tryDelete stubborn |> ignore
+        Suave.Compression.cleanupFolder dir TimeSpan.Zero 0 |> ignore
+        Suave.Compression.cleanupFolder dir TimeSpan.Zero 0 |> ignore
+        Expect.equal (Suave.Compression.pendingDeletionCount ()) queued
+          "the same path must not be queued more than once"
+        // and once it is gone, it gives the slot back
+        Directory.Delete stubborn
+        Suave.Compression.cleanupFolder dir TimeSpan.Zero 0 |> ignore
+        Expect.equal (Suave.Compression.pendingDeletionCount ()) (queued - 1)
+          "a path that is finally gone should release its slot")
+
+    testCase "the shutdown sweep runs once the server has stopped" <| fun _ ->
+      withTempDir (fun root ->
+        let file = Path.Combine(root, "resource.txt")
+        write file expected (TimeSpan.FromMinutes 10.)
+        // with room for no files at all, every artifact counts as obsolete,
+        // so the sweep at shutdown should empty the folder
+        let maxFiles = Suave.Compression.MAX_COMPRESSED_FILES
+        Suave.Compression.MAX_COMPRESSED_FILES <- 0
+        let ctx = runWith { cfg with compressedFilesFolder = Some root } (Files.file file)
+        try
+          Expect.equal (gzipRequest ctx) expected "the file should be served gzipped"
+          Expect.equal (compressedFiles root).Length 1 "there should be one compressed copy to sweep"
+          // The sweep belongs to the server's own shutdown, so awaiting the
+          // server task is enough - there is nothing left to run after it.
+          ctx.cts.Cancel()
+          let stopped =
+            try ctx.serverTask.Wait(TimeSpan.FromSeconds 10.)
+            with :? AggregateException -> true
+          Expect.isTrue stopped "the server should have shut down"
+          Expect.equal (compressedFiles root).Length 0
+            "the artifact should have been swept once the server stopped"
+        finally
+          Suave.Compression.MAX_COMPRESSED_FILES <- maxFiles
+          disposeContext ctx)
+
     testCase "cleanupFolder tolerates a folder that does not exist" <| fun _ ->
       let missing = Path.Combine(Path.GetTempPath(), "suave-compression-" + Guid.NewGuid().ToString("N"))
       // there is nothing to delete, and nothing to throw either

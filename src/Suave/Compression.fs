@@ -132,14 +132,24 @@ module Compression =
   /// Files whose deletion failed – on Windows a copy that another request is
   /// still streaming can refuse to go away. They are retried by the next sweep
   /// instead of being leaked. Bounded, so a folder that cannot be written to
-  /// cannot grow this queue without limit.
+  /// cannot grow this queue without limit, and deduplicated, so a path never
+  /// takes more than one of those slots: a file that can never be deleted
+  /// would otherwise be queued twice by every sweep – once by the retry that
+  /// puts it back and once by the folder scan that meets it again – and crowd
+  /// out the failures of other obsolete files.
   let private pendingDeletions = ConcurrentQueue<string>()
+
+  /// The paths `pendingDeletions` holds, which is what keeps that queue
+  /// duplicate-free. A path stays in this set for exactly as long as it holds
+  /// a slot in the queue, so neither a retry nor a concurrent `tryDelete` can
+  /// queue it a second time.
+  let private pendingDeletionPaths = ConcurrentDictionary<string, bool>(StringComparer.Ordinal)
+
   let private MAX_PENDING_DELETIONS = 10000
 
-  /// Best-effort delete that never throws. Returns true when the file is gone
-  /// after the call (a file that was already missing counts as gone); otherwise
-  /// the path is queued to be retried by the next sweep.
-  let internal tryDelete (path : string) =
+  /// Deletes `path`, answering whether it is gone afterwards – a file that was
+  /// already missing counts as gone – and never throwing.
+  let private deleteNow (path : string) =
     try
       File.Delete path // a no-op when the file does not exist
       true
@@ -147,20 +157,46 @@ module Compression =
     | :? FileNotFoundException | :? DirectoryNotFoundException ->
       true
     | _ ->
-      if pendingDeletions.Count < MAX_PENDING_DELETIONS then
-        pendingDeletions.Enqueue path
+      false
+
+  /// Queues `path` for the next sweep to retry, unless it is queued already or
+  /// there is no room left.
+  let private queueForRetry (path : string) =
+    if pendingDeletionPaths.Count < MAX_PENDING_DELETIONS
+       && pendingDeletionPaths.TryAdd(path, true) then
+      pendingDeletions.Enqueue path
+
+  /// How many paths are waiting for a retry; exposed for the tests.
+  let internal pendingDeletionCount () =
+    pendingDeletionPaths.Count
+
+  /// Best-effort delete that never throws. Returns true when the file is gone
+  /// after the call (a file that was already missing counts as gone); otherwise
+  /// the path is queued – at most once – to be retried by the next sweep.
+  let internal tryDelete (path : string) =
+    if deleteNow path then
+      true
+    else
+      queueForRetry path
       false
 
   /// Retries the deletions that failed earlier. Only the queue as it stands on
-  /// entry is walked: `tryDelete` re-queues what still cannot be deleted, and a
-  /// sweep must not spin on it.
+  /// entry is walked: a path that still cannot be deleted goes back to the end
+  /// of the queue – keeping the slot it already has rather than taking another
+  /// – and a sweep must not spin on it.
   let internal retryPendingDeletions () =
     let mutable remaining = pendingDeletions.Count
     let mutable deleted = 0
     let mutable path = Unchecked.defaultof<string>
     while remaining > 0 && pendingDeletions.TryDequeue(&path) do
       remaining <- remaining - 1
-      if tryDelete path then deleted <- deleted + 1
+      if deleteNow path then
+        // The path is gone, so it gives up its slot: a later failure for the
+        // same path is free to take a new one.
+        pendingDeletionPaths.TryRemove path |> ignore
+        deleted <- deleted + 1
+      else
+        pendingDeletions.Enqueue path
     deleted
 
   /// Publishes `entry` under `k`, returning the path of the entry it superseded,
