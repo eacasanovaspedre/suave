@@ -225,6 +225,22 @@ let ``obsolete compressed artifacts`` cfg =
           Expect.equal (gzipRequest ctx) expected "the file should still be served after its copy was evicted"
           Expect.equal (compressedFiles root).Length 1 "the resource should have been compressed again"))
 
+    testCase "a stale artifact left behind is evicted when the server starts" <| fun _ ->
+      withTempDir (fun root ->
+        let file = Path.Combine(root, "resource.txt")
+        write file expected (TimeSpan.FromMinutes 10.)
+        // Seed a stale compressed copy, older than the default maximum age, as
+        // if it had been orphaned by a previous run of the server.
+        let folder = compressionFolder root
+        Directory.CreateDirectory folder |> ignore
+        let stale = Path.Combine(folder, "stale")
+        write stale "stale" (TimeSpan.FromDays 2.)
+        Expect.isTrue (File.Exists stale) "the stale artifact should exist before the server starts"
+        // Starting the server runs the startup sweep, which must evict it.
+        runWith { cfg with compressedFilesFolder = Some root } (Files.file file)
+        |> withContext (fun _ ->
+          Expect.isFalse (File.Exists stale) "the stale artifact should be evicted at startup"))
+
     testCase "cleanupFolder deletes files older than the maximum age" <| fun _ ->
       withTempDir (fun dir ->
         let old = Path.Combine(dir, "old")
