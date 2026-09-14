@@ -217,7 +217,12 @@ for KeyValue(k, (path, _)) in Globals.compressedFilesMap do
           if i < overBound || now - fi.LastWriteTimeUtc > maxAge then
             // Drop the cache entry before the file, never the other way round.
             match keysByPath.TryGetValue fi.FullName with
-            | true, k -> Globals.compressedFilesMap.TryRemove k |> ignore
+            | true, k ->
+                match Globals.compressedFilesMap.TryGetValue k with
+                | true, (path, timestamp) when Path.GetFullPath path = fi.FullName ->
+                    let item = KeyValuePair<struct (string * string), string * DateTime>(k, (path, timestamp))
+                    Globals.compressedFilesMap.TryRemove item |> ignore
+                | _ -> ()
             | _ -> ()
             if tryDelete fi.FullName then deleted <- deleted + 1
     with _ -> ()
