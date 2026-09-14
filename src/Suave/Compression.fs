@@ -295,6 +295,9 @@ for KeyValue(k, (path, _)) in Globals.compressedFilesMap do
             stream.Dispose()
             return Ok(Some n, fs)
           | None ->
+            // Capture the original seek position before compression consumes the
+            // stream so we can restore it if we need to fall back to serving uncompressed.
+            let originalPosition = if stream.CanSeek then stream.Position else 0L
             // Need to compress — do the minimal awaited work here
             let! pathResult = compressAndStoreAsync key stream n lastModified compressionFolder
             match pathResult with
@@ -309,8 +312,9 @@ for KeyValue(k, (path, _)) in Globals.compressedFilesMap do
               | None when stream.CanSeek ->
                 // Our copy was superseded and deleted before we could open it.
                 // The source stream was read to the end while compressing, so
-                // rewind it and serve the resource uncompressed rather than fail.
-                stream.Position <- 0L
+                // restore the original seek position and serve the resource
+                // uncompressed rather than fail.
+                stream.Position <- originalPosition
                 return Ok(None, stream)
               | None ->
                 stream.Dispose()
