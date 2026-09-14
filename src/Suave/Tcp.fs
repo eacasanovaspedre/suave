@@ -217,6 +217,25 @@ let tryEnableReusePort (listenSocket: Socket) : bool =
   else
     false
 
+/// How long a shutting-down server waits for the connections it is still
+/// serving before it stops waiting for them. Connections are served as
+/// fire-and-forget tasks, so without this wait the server task would complete
+/// while requests are still being answered; the bound is what keeps a wedged
+/// connection from holding shutdown up for ever.
+let mutable shutdownDrainTimeout = TimeSpan.FromSeconds 5.
+
+/// Counts the connections an acceptor has handed to the thread pool and not
+/// yet seen finish. The accept loop ending does not mean the work it started
+/// has, and shutdown waits on this.
+type private InflightConnections() =
+  let mutable count = 0
+  /// How many connections are still being served
+  member this.Count = Volatile.Read(&count)
+  /// A connection has been handed to the thread pool
+  member this.Enter() = Interlocked.Increment(&count) |> ignore
+  /// A connection has finished, however it finished
+  member this.Leave() = Interlocked.Decrement(&count) |> ignore
+
 /// Run a single accept loop on an already-bound, already-listening socket.
 /// `announce` is invoked once at start to report the bound endpoint to the
 /// orchestrator (only the first acceptor's announcement is forwarded to the
@@ -225,6 +244,7 @@ let private runAcceptor
       (listenSocket: Socket)
       (connectionPool: Suave.Sockets.ConcurrentPool<ConnectionFacade>)
       (runtime: HttpRuntime)
+      (inflight: InflightConnections)
       (cancellationToken: CancellationToken) : Task =
   task {
     let remoteBinding (socket : Socket) =
@@ -272,9 +292,16 @@ let private runAcceptor
 
             match remoteBindingResult with
             | Ok binding ->
-                // Fire and forget the connection handling using Task.Run
-                let _connectionTask = Task.Run<unit>(Func<Task<unit>>(fun () -> connection.accept(binding)), cancellationToken)
-                ()
+                // Fire and forget the connection handling using Task.Run;
+                // counted in and out so that shutdown can wait for the
+                // connections that are still being served.
+                inflight.Enter()
+                let connectionTask = Task.Run<unit>(Func<Task<unit>>(fun () -> connection.accept(binding)), cancellationToken)
+                connectionTask.ContinueWith(
+                  Action<Task<unit>>(fun _ -> inflight.Leave()),
+                  CancellationToken.None,
+                  TaskContinuationOptions.ExecuteSynchronously,
+                  TaskScheduler.Default) |> ignore
             | Result.Error error ->
                 // SSL handshake failed, return connection to pool
                 connectionPool.Push(connection)
@@ -350,13 +377,15 @@ let runServerEx acceptorCount maxConcurrentOps bufferSize (binding: SocketBindin
         |> Array.map (fun s ->
             createPools s runtime.matchedBinding maxConcurrentOps runtime cancellationToken bufferSize webpart healthCheckEnabled healthCheckIntervalMs maxConnectionAgeSeconds)
 
+      let inflight = InflightConnections()
+
       let acceptorTasks =
         Array.init effective (fun i ->
           let s = listenSockets.[i]
           let pool = pools.[i]
           // Spin each acceptor on the threadpool independently so they don't
           // serialise on the orchestrator's thread.
-          Task.Run(Func<Task>(fun () -> runAcceptor s pool runtime cancellationToken)))
+          Task.Run(Func<Task>(fun () -> runAcceptor s pool runtime inflight cancellationToken)))
 
       try
         do! Task.WhenAll(acceptorTasks)
@@ -364,6 +393,17 @@ let runServerEx acceptorCount maxConcurrentOps bufferSize (binding: SocketBindin
         | :? AggregateException
         | :? OperationCanceledException
         | :? TaskCanceledException -> ()
+
+      // The accept loops have stopped, but the connections they started are
+      // separate tasks that may still be reading, running a web part or
+      // writing a response. Wait for them, so that this task completing means
+      // the server really has finished - whatever a caller does when it does
+      // (cleaning up artifacts, say) cannot then race work still in flight.
+      // Bounded by `shutdownDrainTimeout`, so a connection that refuses to
+      // end cannot hang shutdown.
+      let drain = Diagnostics.Stopwatch.StartNew()
+      while inflight.Count > 0 && drain.Elapsed < shutdownDrainTimeout do
+        do! Task.Delay 10
 
       // Stops the health checker owned by each pool
       for pool in pools do

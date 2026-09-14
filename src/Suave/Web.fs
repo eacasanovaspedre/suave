@@ -43,6 +43,12 @@ module Web =
       resolveDirectory config.homeFolder,
       Path.Combine(resolveDirectory config.compressedFilesFolder, "_temporary_compressed_files")
 
+    // Compressed copies are a cache on disk; copies left behind by resources
+    // that were recompressed, renamed or deleted while the server was down are
+    // evicted before we start serving, and again once the server has stopped,
+    // so the folder stays bounded instead of growing with every restart.
+    Compression.cleanup compressionFolder |> ignore
+
     // spawn tcp listeners/web workers
     let toRuntime = SuaveConfig.toRuntime config homeFolder compressionFolder
 
@@ -57,7 +63,20 @@ module Web =
 
     let listening = servers |> Seq.map fst |> Async.Parallel
     let serverTasks = servers |> Seq.map snd |> Seq.toArray
-    let server    = Task.WhenAll(serverTasks)
+    // The last sweep runs when every server task has finished - its acceptors
+    // stopped and the connections they started drained - rather than when
+    // cancellation is merely requested: a compression still in flight would
+    // otherwise be free to publish an artifact after the sweep had walked
+    // past it, and the shutdown cleanup we advertise would still leave files
+    // behind. It also keeps this synchronous directory scan off the thread
+    // that calls Cancel.
+    let server : Task =
+      task {
+        try
+          do! Task.WhenAll(serverTasks)
+        finally
+          Compression.cleanup compressionFolder |> ignore
+      } :> Task
     listening, server
 
   /// Runs the web server and blocks waiting for the asynchronous workflow to be cancelled or
