@@ -209,7 +209,7 @@ module Compression =
         // The reverse of the cache: which entry, if any, hands out a given file.
         let keysByPath = Dictionary<string, struct (string * string)>(StringComparer.Ordinal)
         for KeyValue(k, (path, _)) in Globals.compressedFilesMap do
-          keysByPath.[Path.GetFullPath path] <- k
+          keysByPath.[path] <- k
         let now = DateTime.UtcNow
         let overBound = files.Length - (max 0 maxFiles)
         for i in 0 .. files.Length - 1 do
@@ -217,12 +217,7 @@ module Compression =
           if i < overBound || now - fi.LastWriteTimeUtc > maxAge then
             // Drop the cache entry before the file, never the other way round.
             match keysByPath.TryGetValue fi.FullName with
-            | true, k ->
-                match Globals.compressedFilesMap.TryGetValue k with
-                | true, (path, timestamp) when Path.GetFullPath path = fi.FullName ->
-                    let item = KeyValuePair<struct (string * string), string * DateTime>(k, (path, timestamp))
-                    Globals.compressedFilesMap.TryRemove item |> ignore
-                | _ -> ()
+            | true, k -> Globals.compressedFilesMap.TryRemove k |> ignore
             | _ -> ()
             if tryDelete fi.FullName then deleted <- deleted + 1
     with _ -> ()
@@ -295,9 +290,6 @@ module Compression =
             stream.Dispose()
             return Ok(Some n, fs)
           | None ->
-            // Capture the original seek position before compression consumes the
-            // stream so we can restore it if we need to fall back to serving uncompressed.
-            let originalPosition = if stream.CanSeek then stream.Position else 0L
             // Need to compress — do the minimal awaited work here
             let! pathResult = compressAndStoreAsync key stream n lastModified compressionFolder
             match pathResult with
@@ -312,9 +304,8 @@ module Compression =
               | None when stream.CanSeek ->
                 // Our copy was superseded and deleted before we could open it.
                 // The source stream was read to the end while compressing, so
-                // restore the original seek position and serve the resource
-                // uncompressed rather than fail.
-                stream.Position <- originalPosition
+                // rewind it and serve the resource uncompressed rather than fail.
+                stream.Position <- 0L
                 return Ok(None, stream)
               | None ->
                 stream.Dispose()
