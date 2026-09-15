@@ -1431,14 +1431,12 @@ module Http2 =
     /// Serialise a single frame write through the connection's write mutex.
     /// Every outgoing frame goes through here so concurrent stream responses
     /// cannot interleave their frame bytes.
-    member private x.writeFrameSerialized(encInfo: EncodeInfo, payload: FramePayload) = job {
-      do! Job.awaitUnitTask (writeMutex.WaitAsync())
-      try
-        let! _ = Job.awaitTask ((x.write (encInfo, payload)).AsTask())
-        return ()
-      finally
-        writeMutex.Release() |> ignore
-    }
+    member private x.writeFrameSerialized(encInfo: EncodeInfo, payload: FramePayload) =
+      Job.awaitUnitTask (writeMutex.WaitAsync())
+      |> Job.bind (fun () ->
+        Job.tryFinallyFun
+          (Job.awaitTask ((x.write (encInfo, payload)).AsTask()) |> Job.map ignore)
+          (fun () -> writeMutex.Release() |> ignore))
 
     /// Write a single HTTP/2 response (HEADERS + 0..n DATA + optional trailing
     /// HEADERS) on `streamId`, respecting `peerSettings.maxFrameSize` and the
@@ -1644,12 +1642,12 @@ module Http2 =
     /// `writeResponseOnStream`. Exceptions are swallowed and logged: a
     /// failing WebPart must not bring down the whole connection.
     member private x.dispatchStreamAsync (streamId: int32) (stream: StreamData) (webPart: WebPart) =
-      Hopac.start (job {
-        try
-          do! x.dispatchStream streamId stream webPart
-        with ex ->
-          eprintfn "[Http2] stream dispatch failed: %s" ex.Message
-      })
+      Hopac.start (
+        Job.tryWith
+          (x.dispatchStream streamId stream webPart)
+          (fun ex ->
+            eprintfn "[Http2] stream dispatch failed: %s" ex.Message
+            Job.unit ()))
 
     /// Process a completed header block. If the stream is in Idle / Open
     /// state and END_STREAM was set, dispatch immediately. If the block was
@@ -2090,12 +2088,12 @@ module Http2 =
           // here keeps the connection alive when the WebPart throws: we
           // log to stderr but don't tear down the loop. (A future
           // improvement is to send RST_STREAM on stream 1 here.)
-          Hopac.start (job {
-            try
-              do! x.dispatchUpgradeRequest req webPart
-            with ex ->
-              eprintfn "[Http2] upgrade-request dispatch failed: %s" ex.Message
-          })
+          Hopac.start (
+            Job.tryWith
+              (x.dispatchUpgradeRequest req webPart)
+              (fun ex ->
+                eprintfn "[Http2] upgrade-request dispatch failed: %s" ex.Message
+                Job.unit ()))
         | None -> ()
         do! x.runReadLoop webPart
         return Ok ()
@@ -2235,6 +2233,8 @@ module Http2 =
       >=> Writers.setHeader "Upgrade" "h2c"
       >=> Response.response HTTP_101 [||]
 
+    open Hopac.Infixes
+
     /// The handler installed on `ConnectionFacade.Http2UpgradeHandler`. It
     /// owns the connection from the moment it is invoked: it writes the 101,
     /// marks the connection as long-lived (so the health checker leaves it
@@ -2242,25 +2242,24 @@ module Http2 =
     /// returning `Ok false` to break the HTTP/1.1 keep-alive loop.
     let handleUpgrade (facade: ConnectionFacade) (request: HttpRequest)
         : Job<Result<bool, Error>> =
-      job {
-        // Decode the client's SETTINGS hint up front; a malformed header is
-        // a 400 Bad Request per RFC 7540 §3.2 (the client never gets to
-        // become an HTTP/2 peer).
-        let settingsHeaderValue =
-          match request.header "http2-settings" with
-          | Choice1Of2 v -> v
-          | Choice2Of2 _ -> ""
-        match tryDecodeHttp2SettingsHeader settingsHeaderValue with
-        | None ->
-          let httpOutput = new HttpOutput(facade.Connection, facade.Runtime)
-          let! _ =
-            httpOutput.run request
-              (RequestErrors.BAD_REQUEST "Invalid HTTP2-Settings header")
-          return Ok false
-        | Some _clientSettings ->
-          // Send the 101 over HTTP/1.1.
-          let httpOutput = new HttpOutput(facade.Connection, facade.Runtime)
-          let! _ = httpOutput.run request switchingProtocolsResponse
+      // Decode the client's SETTINGS hint up front; a malformed header is
+      // a 400 Bad Request per RFC 7540 §3.2 (the client never gets to
+      // become an HTTP/2 peer).
+      let settingsHeaderValue =
+        match request.header "http2-settings" with
+        | Choice1Of2 v -> v
+        | Choice2Of2 _ -> ""
+      match tryDecodeHttp2SettingsHeader settingsHeaderValue with
+      | None ->
+        let httpOutput = new HttpOutput(facade.Connection, facade.Runtime)
+        httpOutput.run request
+          (RequestErrors.BAD_REQUEST "Invalid HTTP2-Settings header")
+        >>-. Ok false
+      | Some _clientSettings ->
+        // Send the 101 over HTTP/1.1.
+        let httpOutput = new HttpOutput(facade.Connection, facade.Runtime)
+        httpOutput.run request switchingProtocolsResponse
+        >>= fun _ ->
           // Mark the socket as long-lived so the keep-alive health checker
           // does not reap it while HTTP/2 is in use.
           facade.Connection.isLongLived <- true
@@ -2269,10 +2268,10 @@ module Http2 =
           // upgrade request becomes stream 1 (RFC 7540 §3.2: implicitly
           // half-closed from the client toward the server).
           let conn = Http2Connection(facade)
-          match! conn.run (Some request) facade.Webpart with
-          | Ok () -> return Ok false
-          | Result.Error e -> return Result.Error e
-      }
+          conn.run (Some request) facade.Webpart
+          >>- function
+          | Ok () -> Ok false
+          | Result.Error e -> Result.Error e
 
     /// Wire `handleUpgrade` into `ConnectionFacade.Http2UpgradeHandler`.
     /// Idempotent — safe to call from multiple bindings / restarts.
@@ -2296,6 +2295,8 @@ module Http2 =
   // ---------------------------------------------------------------------------
   module H2cPriorKnowledge =
 
+    open Hopac.Infixes
+
     /// The handler installed on
     /// `ConnectionFacade.Http2PriorKnowledgeHandler`. It owns the
     /// connection from the moment it is invoked: it consumes the remainder
@@ -2303,13 +2304,12 @@ module Http2 =
     /// HTTP/2 read/dispatch loop. Returns `Ok false` to break the HTTP/1.1
     /// keep-alive loop in the facade.
     let handlePriorKnowledge (facade: ConnectionFacade) : Job<Result<bool, Error>> =
-      job {
-        facade.Connection.isLongLived <- true
-        let conn = Http2Connection(facade)
-        match! conn.runPriorKnowledge facade.Webpart with
-        | Ok () -> return Ok false
-        | Result.Error e -> return Result.Error e
-      }
+      facade.Connection.isLongLived <- true
+      let conn = Http2Connection(facade)
+      conn.runPriorKnowledge facade.Webpart
+      >>- function
+      | Ok () -> Ok false
+      | Result.Error e -> Result.Error e
 
     /// Wire `handlePriorKnowledge` into
     /// `ConnectionFacade.Http2PriorKnowledgeHandler`. Idempotent — safe to

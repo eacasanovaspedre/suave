@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open Suave
 open Hopac
+open Hopac.Infixes
 
 /// Module for efficient HTTP routing with path parameter support
 module Router =
@@ -103,20 +104,18 @@ module Router =
         | [] -> fail
         | entry :: rest ->
           Alt.prepareJob <| fun () ->
-            job {
-              if entry.methods |> List.contains method then
-                match matchPattern entry.pattern path with
-                | Some parameters ->
-                    for (key, value) in parameters do
-                      ctx.userState.[$"route_{key}"] <- value
-                    match! entry.handler ctx with
-                    | Some _ as res -> return Alt.always res
-                    | None -> return tryPatterns rest
-                | None ->
-                    return tryPatterns rest
-              else
-                return tryPatterns rest
-            }
+            if entry.methods |> List.contains method then
+              match matchPattern entry.pattern path with
+              | Some parameters ->
+                  for (key, value) in parameters do
+                    ctx.userState.[$"route_{key}"] <- value
+                  (entry.handler ctx :> Job<_>) >>= function
+                  | Some _ as res -> Job.result (Alt.always res)
+                  | None -> Job.result (tryPatterns rest)
+              | None ->
+                  Job.result (tryPatterns rest)
+            else
+              Job.result (tryPatterns rest)
       tryPatterns router.patternRoutes
 
   /// Get a route parameter from context

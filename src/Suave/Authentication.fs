@@ -36,22 +36,22 @@ let inline private addUserName username ctx =
 
 let authenticateBasicAsync (f: _ -> Job<bool>) protectedPart ctx =
   Alt.prepareJob <| fun () ->
-    job {
-      let p = ctx.request
-      match p.header "authorization" with
-      | Choice1Of2 header ->
-        match tryParseBasicAuthenticationToken header with
-        | Some (username, password) ->
-            let! authenticated = f (username, password) |> asJob
+    let p = ctx.request
+    match p.header "authorization" with
+    | Choice1Of2 header ->
+      match tryParseBasicAuthenticationToken header with
+      | Some (username, password) ->
+          f (username, password)
+          |> asJob
+          |> Job.map (fun authenticated ->
             if authenticated then
-              return protectedPart (addUserName username ctx)
+              protectedPart (addUserName username ctx)
             else
-              return challenge ctx
-        | None ->
-            return challenge ctx
-      | Choice2Of2 _ ->
-          return challenge ctx
-    }
+              challenge ctx)
+      | None ->
+          Job.result (challenge ctx)
+    | Choice2Of2 _ ->
+        Job.result (challenge ctx)
 
 let authenticateBasic f protectedPart ctx =
   authenticateBasicAsync (f >> Job.result) protectedPart ctx

@@ -3,6 +3,7 @@ namespace Suave
 open System
 open System.Text.RegularExpressions
 open Hopac
+open Hopac.Infixes
 
 /// Input Validation Framework for Suave
 module Validation =
@@ -491,19 +492,13 @@ module Validation =
   /// Map over a Job validator
   let mapJob (f: 'U -> 'V) (validator: JobValidator<'T, 'U>) : JobValidator<'T, 'V> =
     fun input ->
-      job {
-        let! result = validator input
-        return
-          match result with
-          | Valid value -> Valid (f value)
-          | Invalid errors -> Invalid errors
-      }
+      validator input >>- function
+      | Valid value -> Valid (f value)
+      | Invalid errors -> Invalid errors
 
   /// Bind Job validators
   let bindJob (f: 'U -> JobValidator<'T, 'V>) (validator: JobValidator<'T, 'U>) : JobValidator<'T, 'V> =
     fun input ->
-      job {
-        match! validator input with
-        | Valid value -> return! f value input
-        | Invalid errors -> return Invalid errors
-      }
+      validator input >>= function
+      | Valid value -> f value input
+      | Invalid errors -> Job.result (Invalid errors)

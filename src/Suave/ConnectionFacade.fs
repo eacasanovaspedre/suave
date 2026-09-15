@@ -17,6 +17,7 @@ open Suave.Utils.Bytes
 open System.Threading
 open System.Threading.Tasks
 open Hopac
+open Hopac.Infixes
 open ConnectionHealthChecker
 
 type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPool: ConcurrentPool<ConnectionFacade>, tracker: ActiveConnectionTracker<ConnectionFacade>, cancellationToken: CancellationToken, webpart: WebPart) =
@@ -449,23 +450,21 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
         return Ok request
       })
 
-  member this.exitHttpLoopWithError (err:Error) = job {
-      match err with
-      | InputDataError (None, msg) ->
-        let! _ = httpOutput.run HttpRequest.empty (RequestErrors.BAD_REQUEST msg)
-        ()
-
-      | InputDataError (Some status,msg) ->
-        match Http.HttpCode.tryParse status with
-        | (Choice1Of2 statusCode) ->
-          let! _ = httpOutput.run HttpRequest.empty (Response.response statusCode (Globals.UTF8.GetBytes msg))
-          ()
-        | (Choice2Of2 _err) ->
-          let! _ = httpOutput.run HttpRequest.empty (RequestErrors.BAD_REQUEST msg)
-          ()
-      | _ -> ()
-      return Ok false
-    }
+  member this.exitHttpLoopWithError (err:Error) =
+    match err with
+    | InputDataError (None, msg) ->
+      httpOutput.run HttpRequest.empty (RequestErrors.BAD_REQUEST msg)
+      >>-. Ok false
+    | InputDataError (Some status, msg) ->
+      match Http.HttpCode.tryParse status with
+      | Choice1Of2 statusCode ->
+        httpOutput.run HttpRequest.empty (Response.response statusCode (Globals.UTF8.GetBytes msg))
+        >>-. Ok false
+      | Choice2Of2 _ ->
+        httpOutput.run HttpRequest.empty (RequestErrors.BAD_REQUEST msg)
+        >>-. Ok false
+    | _ ->
+      Job.result (Ok false)
 
   /// Returns true if the parsed request line is the literal HTTP/2 connection
   /// preface ("PRI * HTTP/2.0") that begins a prior-knowledge HTTP/2 cleartext
@@ -505,55 +504,46 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
     isUpgradeH2c && connectionMentionsUpgradeAndSettings && hasSettingsHeader
 
   member this.processRequest () =
-    job {
-      let! reqRes = SocketOp.toJob (this.readRequest())
-      match reqRes with
-      | Result.Error err ->
-        // Couldn't parse HTTP request; answering with BAD_REQUEST and closing the connection.
-        return! this.exitHttpLoopWithError err
-      | Ok request ->
-        // RFC 7540 §3.4: prior-knowledge HTTP/2 cleartext is signalled by
-        // the connection opening with "PRI * HTTP/2.0\r\n…" — `readRequest`
-        // tags such connections by returning a sentinel request with
-        // method="PRI", path="*", version="HTTP/2.0". Hand it to the
-        // prior-knowledge handler if one is registered. With no handler
-        // present we fall through and the request will be rejected as a
-        // missing-Host BAD_REQUEST further down — preserving the
-        // pre-HTTP/2 behaviour for servers that haven't wired in HTTP/2.
-        if ConnectionFacade.isHttp2PriorKnowledgePreface
-             request.rawMethod request.rawPath request.httpVersion then
-          match ConnectionFacade.Http2PriorKnowledgeHandler with
-          | Some handler ->
-            try
-              return! handler this
-            with ex ->
-              return Result.Error (Error.ConnectionError ex.Message)
-          | None ->
-            return! this.exitHttpLoopWithError
-              (InputDataError (Some 400, "HTTP/2 prior-knowledge not supported"))
-        else
-        // RFC 7540 §3.2: if the client requested an h2c upgrade and a handler
-        // is registered, hand the connection over. The handler owns the
-        // connection from here on (writes the 101, runs HTTP/2). If no handler
-        // is registered the upgrade headers are simply ignored and the request
-        // is processed as a normal HTTP/1.1 request — preserving backward
-        // compatibility for servers that haven't wired in HTTP/2.
-        //
-        // The WebSocket Upgrade (`Upgrade: websocket`) is handled by user web
-        // parts via the `handShake` combinator and is unaffected: we only
-        // intercept requests whose `Upgrade` token is exactly `h2c`.
-        match ConnectionFacade.Http2UpgradeHandler with
-        | Some handler when ConnectionFacade.isH2cUpgradeRequest request ->
-          try
-            return! handler this request
-          with ex ->
-            return Result.Error (Error.ConnectionError ex.Message)
-        | _ ->
-          try
-            return! httpOutput.run request webpart
-          with ex ->
-            return Result.Error (Error.ConnectionError ex.Message)
-    }
+    let onEx (ex: exn) =
+      Job.result (Result.Error (Error.ConnectionError ex.Message))
+    SocketOp.toJob (this.readRequest())
+    >>= function
+    | Result.Error err ->
+      // Couldn't parse HTTP request; answering with BAD_REQUEST and closing the connection.
+      this.exitHttpLoopWithError err
+    | Ok request ->
+      // RFC 7540 §3.4: prior-knowledge HTTP/2 cleartext is signalled by
+      // the connection opening with "PRI * HTTP/2.0\r\n…" — `readRequest`
+      // tags such connections by returning a sentinel request with
+      // method="PRI", path="*", version="HTTP/2.0". Hand it to the
+      // prior-knowledge handler if one is registered. With no handler
+      // present we fall through and the request will be rejected as a
+      // missing-Host BAD_REQUEST further down — preserving the
+      // pre-HTTP/2 behaviour for servers that haven't wired in HTTP/2.
+      if ConnectionFacade.isHttp2PriorKnowledgePreface
+           request.rawMethod request.rawPath request.httpVersion then
+        match ConnectionFacade.Http2PriorKnowledgeHandler with
+        | Some handler ->
+          Job.tryWithDelay (fun () -> handler this) onEx
+        | None ->
+          this.exitHttpLoopWithError
+            (InputDataError (Some 400, "HTTP/2 prior-knowledge not supported"))
+      else
+      // RFC 7540 §3.2: if the client requested an h2c upgrade and a handler
+      // is registered, hand the connection over. The handler owns the
+      // connection from here on (writes the 101, runs HTTP/2). If no handler
+      // is registered the upgrade headers are simply ignored and the request
+      // is processed as a normal HTTP/1.1 request — preserving backward
+      // compatibility for servers that haven't wired in HTTP/2.
+      //
+      // The WebSocket Upgrade (`Upgrade: websocket`) is handled by user web
+      // parts via the `handShake` combinator and is unaffected: we only
+      // intercept requests whose `Upgrade` token is exactly `h2c`.
+      match ConnectionFacade.Http2UpgradeHandler with
+      | Some handler when ConnectionFacade.isH2cUpgradeRequest request ->
+        Job.tryWithDelay (fun () -> handler this request) onEx
+      | _ ->
+        Job.tryWithDelay (fun () -> httpOutput.run request webpart) onEx
 
   member this.shutdown() =
       Connection.signalAbort connection
@@ -584,44 +574,40 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
   /// a web part, an error handler and a Connection to use for read-write
   /// communication -- getting the initial request stream.
   member this.requestLoop () =
-    job {
-      let mutable flag = true
-      let mutable result = Ok ()
-      while flag && not (cancellationToken.IsCancellationRequested) do
-        let! b = this.processRequest ()
-        match b with
-        | Ok b ->
-          flag <- b
-        | Result.Error e ->
-          flag <- false
-          result <- Result.Error e
-      return result
-    }
+    let rec loop () =
+      if cancellationToken.IsCancellationRequested then
+        Job.result (Ok ())
+      else
+        this.processRequest () >>= function
+        | Ok true -> loop ()
+        | Ok false -> Job.result (Ok ())
+        | Result.Error e -> Job.result (Result.Error e)
+    loop ()
 
-  member this.accept(binding) = job {
-    let clientIp = (binding.ip.ToString())
+  member this.accept(binding) =
+    let clientIp = binding.ip.ToString()
     if Globals.verbose then
       Console.WriteLine("[Conn:{0}] accept: {1} connected. Now has {2} connected", connectionId, clientIp, tracker.ActiveConnectionCount)
     connection.socketBinding <- binding
-    try
-      try
-        reader.init()
-        let! loopRes = this.requestLoop()
-        match loopRes with
-        | Ok () -> ()
-        | Result.Error err ->
+    Job.tryFinallyFun
+      (Job.tryWithDelay
+        (fun () ->
+          reader.init()
+          this.requestLoop () >>- function
+          | Ok () -> ()
+          | Result.Error err ->
+            if Globals.verbose then
+              Console.WriteLine($"[Conn:{connectionId}] accept: Error: {err}"))
+        (fun ex ->
           if Globals.verbose then
-            do Console.WriteLine($"[Conn:{connectionId}] accept: Error: {err}")
-      with ex ->
-        if Globals.verbose then
-          do Console.WriteLine($"[Conn:{connectionId}] accept: Exception: {ex.Message}")
-    finally
-      // The reader pumps the inbound transport on demand from inside the request
-      // loop, so by the time requestLoop has returned there is no background
-      // reader task to await — just shut the transport down and recycle.
-      this.shutdown()
-
-    this.recycleConnection()
-    if Globals.verbose then
-        do Console.WriteLine("[Conn:{0}] accept:Disconnected {1}. {2} connected.", connectionId, clientIp, tracker.ActiveConnectionCount)
-  }
+            Console.WriteLine($"[Conn:{connectionId}] accept: Exception: {ex.Message}")
+          Job.unit ()))
+      (fun () ->
+        // The reader pumps the inbound transport on demand from inside the request
+        // loop, so by the time requestLoop has returned there is no background
+        // reader task to await — just shut the transport down and recycle.
+        this.shutdown())
+    >>- fun () ->
+      this.recycleConnection()
+      if Globals.verbose then
+        Console.WriteLine("[Conn:{0}] accept:Disconnected {1}. {2} connected.", connectionId, clientIp, tracker.ActiveConnectionCount)

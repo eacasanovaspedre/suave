@@ -2,6 +2,7 @@
 module Suave.WebPart
 
 open Hopac
+open Hopac.Infixes
 
 type WebPart<'a> = 'a -> Alt<'a option>
 
@@ -23,11 +24,9 @@ let toAsync (x : Alt<'a>) : Async<'a> =
 
 let bind (f: 'a -> Alt<'b option>) (a: Alt<'a option>) : Alt<'b option> =
   Alt.prepareJob <| fun () ->
-    job {
-      match! a with
-      | None -> return fail
-      | Some q -> return f q
-    }
+    (a :> Job<_>) >>= function
+    | None -> Job.result fail
+    | Some q -> Job.result (f q)
 
 let compose (first : 'a -> Alt<'b option>) (second : 'b -> Alt<'c option>)
             : 'a -> Alt<'c option> =
@@ -49,11 +48,9 @@ let rec fallback (options : WebPart<'a> list) : WebPart<'a> =
     | [] -> fail
     | p :: tail ->
       Alt.prepareJob <| fun () ->
-        job {
-          match! p arg with
-          | Some x -> return succeed x
-          | None -> return fallback tail arg
-        }
+        (p arg :> Job<_>) >>= function
+        | Some x -> Job.result (succeed x)
+        | None -> Job.result (fallback tail arg)
 
 let choose options = fallback options
 
@@ -63,11 +60,9 @@ let rec inject (postOp : WebPart<'a>) (pairs : (WebPart<'a> * WebPart<'a>) list)
     | [] -> fail
     | (p,q) :: tail ->
       Alt.prepareJob <| fun () ->
-        job {
-          match! p arg with
-          | Some x -> return (compose postOp q) x
-          | None -> return inject postOp tail arg
-        }
+        (p arg :> Job<_>) >>= function
+        | Some x -> Job.result ((compose postOp q) x)
+        | None -> Job.result (inject postOp tail arg)
 
 let inline warbler f a = f a a
 
@@ -81,11 +76,9 @@ let cond item f g a =
 let inline tryThen (first : WebPart<'a>) (second : WebPart<'a>) : WebPart<'a> =
   fun x ->
     Alt.prepareJob <| fun () ->
-      job {
-        match! first x with
-        | None -> return second x
-        | r -> return Alt.always r
-      }
+      (first x :> Job<_>) >>= function
+      | None -> Job.result (second x)
+      | r -> Job.result (Alt.always r)
 
 let inline concatenate first second = fun x ->
   match first x with

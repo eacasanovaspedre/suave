@@ -297,12 +297,10 @@ let private runAcceptor
                 // Hand the connection to Hopac; counted in and out so that
                 // shutdown can wait for connections that are still being served.
                 inflight.Enter()
-                Hopac.start (job {
-                  try
-                    do! connection.accept(binding)
-                  finally
-                    inflight.Leave()
-                })
+                Hopac.start (
+                  Job.tryFinallyFun
+                    (connection.accept binding)
+                    (fun () -> inflight.Leave()))
             | Result.Error error ->
                 // SSL handshake failed, return connection to pool
                 connectionPool.Push(connection)

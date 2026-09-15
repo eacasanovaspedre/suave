@@ -311,34 +311,35 @@ module WebSocket =
       else
         Choice2Of2 (RequestErrors.BAD_REQUEST "Bad Request" ctx)
 
+  open Hopac.Infixes
+
   /// The handShakeWithSubprotocol combinator captures a WebSocket and pass it to the provided `continuation`
   let handShakeWithSubprotocol (choose : string [] -> HttpContext -> Alt<string option>) (continuation : WebSocket -> HttpContext -> SocketOp<unit>) (ctx : HttpContext) =
     Alt.prepareJob <| fun () ->
-      job {
-        match validateHandShake ctx with
-        | Choice1Of2 webSocketKey ->
-          let! subprotocol =
-            match ctx.request.header "sec-websocket-protocol" with
-            | Choice1Of2 webSocketProtocol -> choose (webSocketProtocol.Split [|','|]) ctx
-            | _ -> Alt.always None
-          let! _ = Job.awaitTask ((handShakeAux subprotocol webSocketKey continuation ctx).AsTask())
-          return Control.CLOSE ctx
-        | Choice2Of2 response ->
-          return response
-      }
+      match validateHandShake ctx with
+      | Choice1Of2 webSocketKey ->
+        let subprotocol =
+          match ctx.request.header "sec-websocket-protocol" with
+          | Choice1Of2 webSocketProtocol -> choose (webSocketProtocol.Split [|','|]) ctx
+          | _ -> Alt.always None
+        (subprotocol :> Job<_>)
+        >>= fun proto ->
+          Job.awaitTask ((handShakeAux proto webSocketKey continuation ctx).AsTask())
+          >>-. Control.CLOSE ctx
+      | Choice2Of2 response ->
+        Job.result response
 
   /// The handShake combinator captures a WebSocket and pass it to the provided `continuation`
   let handShake (continuation : WebSocket -> HttpContext -> SocketOp<unit>) (ctx : HttpContext) =
     Alt.prepareJob <| fun () ->
-      job {
-        match validateHandShake ctx with
-        | Choice1Of2 webSocketKey ->
-          let! a = Job.awaitTask ((handShakeAux None webSocketKey continuation ctx).AsTask())
+      match validateHandShake ctx with
+      | Choice1Of2 webSocketKey ->
+        Job.awaitTask ((handShakeAux None webSocketKey continuation ctx).AsTask())
+        >>- fun a ->
           match a with
           | Ok _ -> ()
           | Result.Error err ->
             Console.WriteLine($"WebSocket disconnected {err}",err)
-          return Control.CLOSE ctx
-        | Choice2Of2 response ->
-          return response
-      }
+          Control.CLOSE ctx
+      | Choice2Of2 response ->
+        Job.result response
