@@ -28,7 +28,7 @@ module ByteConstants =
     let charBuffer = Array.zeroCreate<char>(11)
     let charSpan = System.Span<char>(charBuffer)
     let mutable charsWritten = 0
-    
+
     // Use TryFormat for zero-allocation integer formatting
     if value.TryFormat(charSpan, &charsWritten) then
       // Convert chars directly to ASCII bytes without intermediate string
@@ -44,7 +44,7 @@ module ByteConstants =
   let spaceBytes = ReadOnlyMemory<byte>(ASCII.bytes " ")
   let dateBytes = ReadOnlyMemory<byte>(ASCII.bytes "\r\nDate: ")
   let colonBytes = ReadOnlyMemory<byte>(ASCII.bytes ": ")
-  
+
   // Pre-computed status code bytes for common HTTP status codes
   let statusCode200 = ReadOnlyMemory<byte>(ASCII.bytes "200")
   let statusCode201 = ReadOnlyMemory<byte>(ASCII.bytes "201")
@@ -59,7 +59,7 @@ module ByteConstants =
   let statusCode500 = ReadOnlyMemory<byte>(ASCII.bytes "500")
   let statusCode502 = ReadOnlyMemory<byte>(ASCII.bytes "502")
   let statusCode503 = ReadOnlyMemory<byte>(ASCII.bytes "503")
-  
+
   // Pre-computed reason phrases for common status codes
   let reason200 = ReadOnlyMemory<byte>(ASCII.bytes "OK")
   let reason201 = ReadOnlyMemory<byte>(ASCII.bytes "Created")
@@ -74,7 +74,7 @@ module ByteConstants =
   let reason500 = ReadOnlyMemory<byte>(ASCII.bytes "Internal Server Error")
   let reason502 = ReadOnlyMemory<byte>(ASCII.bytes "Bad Gateway")
   let reason503 = ReadOnlyMemory<byte>(ASCII.bytes "Service Unavailable")
-  
+
   // Pre-computed common header names as bytes
   let headerContentType = ReadOnlyMemory<byte>(ASCII.bytes "Content-Type")
   let headerContentLength = ReadOnlyMemory<byte>(ASCII.bytes "Content-Length")
@@ -86,7 +86,7 @@ module ByteConstants =
   let headerUserAgent = ReadOnlyMemory<byte>(ASCII.bytes "User-Agent")
   let headerHost = ReadOnlyMemory<byte>(ASCII.bytes "Host")
   let headerUpgrade = ReadOnlyMemory<byte>(ASCII.bytes "Upgrade")
-  
+
   /// Get pre-computed header name bytes if available, otherwise convert
   let getHeaderBytes (headerName: string) =
     match headerName.ToLowerInvariant() with
@@ -110,7 +110,7 @@ type HttpOutput(connection: Connection, runtime: HttpRuntime) =
         ; request = HttpRequest.empty
         ; userState = Globals.DictionaryPool.Get()
         ; response = HttpResult.empty }
-  
+
   // Expose connection as a property to enable inlining of write methods
   member val Connection = connection with get
 
@@ -428,25 +428,26 @@ type HttpOutput(connection: Connection, runtime: HttpRuntime) =
 
   /// Check if the web part can perform its work on the current request. If it
   /// can't it will return None and the run method will return.
-  member this.run (request:HttpRequest) (webPart : WebPart) = 
-    task {
+  member this.run (request:HttpRequest) (webPart : WebPart) : Job<Result<bool, Error>> =
+    job {
       try
         freshContext.request <- request
         freshContext.userState.Clear()
         let wp = webPart freshContext
-        match Hopac.run (this.executeWebPart wp) with 
+        let! r = this.executeWebPart wp
+        match r with
         | Some ctx ->
-          let! _ = this.writeResponse ctx
+          do! Job.awaitTask (this.writeResponse ctx)
           let keepAlive =
             match ctx.request.header "connection" with
             | Choice1Of2 conn ->
               String.equalsOrdinalCI conn "keep-alive"
             | Choice2Of2 _ ->
               ctx.request.httpVersion.Equals("HTTP/1.1")
-          return Ok (keepAlive)
+          return Ok keepAlive
         | None ->
-          return Ok (false)
+          return Ok false
       with ex ->
         return Result.Error(Error.ConnectionError ex.Message)
-  }
+    }
 

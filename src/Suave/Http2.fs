@@ -2241,8 +2241,8 @@ module Http2 =
     /// alone), then runs the HTTP/2 connection-preface exchange before
     /// returning `Ok false` to break the HTTP/1.1 keep-alive loop.
     let handleUpgrade (facade: ConnectionFacade) (request: HttpRequest)
-        : Task<Result<bool, Error>> =
-      task {
+        : Job<Result<bool, Error>> =
+      job {
         // Decode the client's SETTINGS hint up front; a malformed header is
         // a 400 Bad Request per RFC 7540 §3.2 (the client never gets to
         // become an HTTP/2 peer).
@@ -2269,8 +2269,7 @@ module Http2 =
           // upgrade request becomes stream 1 (RFC 7540 §3.2: implicitly
           // half-closed from the client toward the server).
           let conn = Http2Connection(facade)
-          let runResult = Hopac.run (conn.run (Some request) facade.Webpart)
-          match runResult with
+          match! conn.run (Some request) facade.Webpart with
           | Ok () -> return Ok false
           | Result.Error e -> return Result.Error e
       }
@@ -2303,12 +2302,11 @@ module Http2 =
     /// of the preface, marks the connection long-lived, and runs the
     /// HTTP/2 read/dispatch loop. Returns `Ok false` to break the HTTP/1.1
     /// keep-alive loop in the facade.
-    let handlePriorKnowledge (facade: ConnectionFacade) : Task<Result<bool, Error>> =
-      task {
+    let handlePriorKnowledge (facade: ConnectionFacade) : Job<Result<bool, Error>> =
+      job {
         facade.Connection.isLongLived <- true
         let conn = Http2Connection(facade)
-        let runResult = Hopac.run (conn.runPriorKnowledge facade.Webpart)
-        match runResult with
+        match! conn.runPriorKnowledge facade.Webpart with
         | Ok () -> return Ok false
         | Result.Error e -> return Result.Error e
       }

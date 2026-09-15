@@ -268,10 +268,10 @@ module WebSocket =
       let handShakeToken = Convert.ToBase64String webSocketHash
       match webSocketProtocol with
       | Some subprotocol ->
-        let! a = SocketOp.ofTask ((new HttpOutput(ctx.connection,ctx.runtime)).run ctx.request (handShakeWithSubprotocolResponse subprotocol handShakeToken))
+        let! a = SocketOp.ofTask (Hopac.startAsTask ((new HttpOutput(ctx.connection,ctx.runtime)).run ctx.request (handShakeWithSubprotocolResponse subprotocol handShakeToken)))
         ()
       | None ->
-        let! a = SocketOp.ofTask ((new HttpOutput(ctx.connection,ctx.runtime)).run ctx.request (handShakeResponse handShakeToken))
+        let! a = SocketOp.ofTask (Hopac.startAsTask ((new HttpOutput(ctx.connection,ctx.runtime)).run ctx.request (handShakeResponse handShakeToken)))
         ()
       
       // Mark connection as long-lived (WebSocket) to prevent health checker from closing it

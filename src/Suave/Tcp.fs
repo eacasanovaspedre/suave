@@ -16,9 +16,8 @@ open Hopac
 [<Literal>]
 let MaxBacklog = Int32.MaxValue
 
-/// A TCP Worker is a thing that takes a TCP client and returns an asynchronous
-/// workflow thereof.
-type TcpWorker<'a> = ConnectionFacade -> Task<'a>
+/// A TCP Worker is a thing that takes a TCP client and returns a Hopac Job.
+type TcpWorker<'a> = ConnectionFacade -> Job<'a>
 
 type StartedData =
   { startCalledUtc : DateTimeOffset
@@ -222,13 +221,13 @@ let tryEnableReusePort (listenSocket: Socket) : bool =
 
 /// How long a shutting-down server waits for the connections it is still
 /// serving before it stops waiting for them. Connections are served as
-/// fire-and-forget tasks, so without this wait the server task would complete
-/// while requests are still being answered; the bound is what keeps a wedged
-/// connection from holding shutdown up for ever.
+/// fire-and-forget Hopac Jobs, so without this wait the server task would
+/// complete while requests are still being answered; the bound is what keeps
+/// a wedged connection from holding shutdown up for ever.
 let mutable shutdownDrainTimeout = TimeSpan.FromSeconds 5.
 
-/// Counts the connections an acceptor has handed to the thread pool and not
-/// yet seen finish. The accept loop ending does not mean the work it started
+/// Counts the connections an acceptor has started as Hopac Jobs and not yet
+/// seen finish. The accept loop ending does not mean the work it started
 /// has, and shutdown waits on this.
 type private InflightConnections() =
   let mutable count = 0
@@ -295,16 +294,15 @@ let private runAcceptor
 
             match remoteBindingResult with
             | Ok binding ->
-                // Fire and forget the connection handling using Task.Run;
-                // counted in and out so that shutdown can wait for the
-                // connections that are still being served.
+                // Hand the connection to Hopac; counted in and out so that
+                // shutdown can wait for connections that are still being served.
                 inflight.Enter()
-                let connectionTask = Task.Run<unit>(Func<Task<unit>>(fun () -> connection.accept(binding)), cancellationToken)
-                connectionTask.ContinueWith(
-                  Action<Task<unit>>(fun _ -> inflight.Leave()),
-                  CancellationToken.None,
-                  TaskContinuationOptions.ExecuteSynchronously,
-                  TaskScheduler.Default) |> ignore
+                Hopac.start (job {
+                  try
+                    do! connection.accept(binding)
+                  finally
+                    inflight.Leave()
+                })
             | Result.Error error ->
                 // SSL handshake failed, return connection to pool
                 connectionPool.Push(connection)
@@ -398,12 +396,12 @@ let runServerEx acceptorCount maxConcurrentOps bufferSize (binding: SocketBindin
         | :? TaskCanceledException -> ()
 
       // The accept loops have stopped, but the connections they started are
-      // separate tasks that may still be reading, running a web part or
-      // writing a response. Wait for them, so that this task completing means
-      // the server really has finished - whatever a caller does when it does
-      // (cleaning up artifacts, say) cannot then race work still in flight.
-      // Bounded by `shutdownDrainTimeout`, so a connection that refuses to
-      // end cannot hang shutdown.
+      // Hopac Jobs that may still be reading, running a web part or writing a
+      // response. Wait for them, so that this task completing means the server
+      // really has finished - whatever a caller does when it does (cleaning up
+      // artifacts, say) cannot then race work still in flight. Bounded by
+      // `shutdownDrainTimeout`, so a connection that refuses to end cannot
+      // hang shutdown.
       let drain = Diagnostics.Stopwatch.StartNew()
       while inflight.Count > 0 && drain.Elapsed < shutdownDrainTimeout do
         do! Task.Delay 10

@@ -3,6 +3,7 @@ namespace Suave.Sockets
 open System
 open System.Net.Sockets
 open System.Threading.Tasks
+open Hopac
 
 type private SystemSocketError = SocketError
 
@@ -99,6 +100,12 @@ module SocketOp =
   /// Convert ValueTask-based SocketOp to Task-based for compatibility
   let inline toTask (value : SocketOp<'a>) : Task<Result<'a,Error>> =
     value.AsTask()
+
+  /// Await a SocketOp from a Hopac Job without blocking a thread.
+  /// Completed ValueTasks (the parse/write fast path) become `Job.result`.
+  let inline toJob (value : SocketOp<'a>) : Job<Result<'a,Error>> =
+    if value.IsCompletedSuccessfully then Job.result value.Result
+    else Job.awaitTask (value.AsTask())
 
   /// Convert Task-based to ValueTask-based SocketOp
   let inline ofTask (value : Task<Result<'a,Error>>) : SocketOp<'a> =

@@ -16,6 +16,7 @@ open Suave.Sockets.SocketOp.Operators
 open Suave.Utils.Bytes
 open System.Threading
 open System.Threading.Tasks
+open Hopac
 open ConnectionHealthChecker
 
 type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPool: ConcurrentPool<ConnectionFacade>, tracker: ActiveConnectionTracker<ConnectionFacade>, cancellationToken: CancellationToken, webpart: WebPart) =
@@ -278,7 +279,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
   /// `Tcp.fs` at server startup so that `ConnectionFacade.fs` need not
   /// take a forward dependency on `Http2.fs` (which is compiled later).
   static member val Http2UpgradeHandler
-    : (ConnectionFacade -> HttpRequest -> Task<Result<bool, Error>>) option = None
+    : (ConnectionFacade -> HttpRequest -> Job<Result<bool, Error>>) option = None
     with get, set
 
   /// Optional hook invoked when an incoming cleartext connection opens with
@@ -294,7 +295,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
   /// from `Tcp.fs` at server startup so that `ConnectionFacade.fs` need
   /// not take a forward dependency on `Http2.fs` (which is compiled later).
   static member val Http2PriorKnowledgeHandler
-    : (ConnectionFacade -> Task<Result<bool, Error>>) option = None
+    : (ConnectionFacade -> Job<Result<bool, Error>>) option = None
     with get, set
 
   member this.parsePostData maxContentLength (contentLengthHeader : Choice<string,_>) (contentTypeHeader:Choice<string,_>) : SocketOp<unit> =
@@ -417,9 +418,11 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
           return Result.Error (InputDataError (None, "Missing 'Host' header"))
         | Choice1Of2 rawHost ->
 
-        // 100-continue handling
+        // 100-continue handling. `readRequest` stays a ValueTask SocketOp, so
+        // the Job from `HttpOutput.run` is scheduled on Hopac and awaited as
+        // a Task rather than via `Hopac.run`.
         if headers @@ "expect" = Choice1Of2 "100-continue" then
-          let! _ = httpOutput.run HttpRequest.empty Intermediate.CONTINUE
+          let! _ = Hopac.startAsTask (httpOutput.run HttpRequest.empty Intermediate.CONTINUE)
           ()
 
         let! postRes =
@@ -446,14 +449,14 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
         return Ok request
       })
 
-  member this.exitHttpLoopWithError (err:Error) = task{
+  member this.exitHttpLoopWithError (err:Error) = job {
       match err with
       | InputDataError (None, msg) ->
         let! _ = httpOutput.run HttpRequest.empty (RequestErrors.BAD_REQUEST msg)
         ()
 
       | InputDataError (Some status,msg) ->
-        match Http.HttpCode.tryParse status with 
+        match Http.HttpCode.tryParse status with
         | (Choice1Of2 statusCode) ->
           let! _ = httpOutput.run HttpRequest.empty (Response.response statusCode (Globals.UTF8.GetBytes msg))
           ()
@@ -461,7 +464,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
           let! _ = httpOutput.run HttpRequest.empty (RequestErrors.BAD_REQUEST msg)
           ()
       | _ -> ()
-      return Ok(false)
+      return Ok false
     }
 
   /// Returns true if the parsed request line is the literal HTTP/2 connection
@@ -502,8 +505,8 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
     isUpgradeH2c && connectionMentionsUpgradeAndSettings && hasSettingsHeader
 
   member this.processRequest () =
-    task {
-      let! reqRes = this.readRequest()
+    job {
+      let! reqRes = SocketOp.toJob (this.readRequest())
       match reqRes with
       | Result.Error err ->
         // Couldn't parse HTTP request; answering with BAD_REQUEST and closing the connection.
@@ -547,10 +550,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
             return Result.Error (Error.ConnectionError ex.Message)
         | _ ->
           try
-            let! runRes = httpOutput.run request webpart
-            match runRes with
-            | Result.Error err -> return Result.Error err
-            | Ok keepAlive -> return Ok keepAlive
+            return! httpOutput.run request webpart
           with ex ->
             return Result.Error (Error.ConnectionError ex.Message)
     }
@@ -584,7 +584,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
   /// a web part, an error handler and a Connection to use for read-write
   /// communication -- getting the initial request stream.
   member this.requestLoop () =
-    task {
+    job {
       let mutable flag = true
       let mutable result = Ok ()
       while flag && not (cancellationToken.IsCancellationRequested) do
@@ -598,7 +598,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
       return result
     }
 
-  member this.accept(binding) = task{
+  member this.accept(binding) = job {
     let clientIp = (binding.ip.ToString())
     if Globals.verbose then
       Console.WriteLine("[Conn:{0}] accept: {1} connected. Now has {2} connected", connectionId, clientIp, tracker.ActiveConnectionCount)
@@ -618,7 +618,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
     finally
       // The reader pumps the inbound transport on demand from inside the request
       // loop, so by the time requestLoop has returned there is no background
-      // reader task to await \u2014 just shut the transport down and recycle.
+      // reader task to await — just shut the transport down and recycle.
       this.shutdown()
 
     this.recycleConnection()
