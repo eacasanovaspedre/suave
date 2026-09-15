@@ -3,6 +3,7 @@ namespace Suave
 open TcpServerFactory
 open System.Threading.Tasks
 open Tcp
+open Hopac
 
 [<AutoOpen>]
 module Web =
@@ -20,17 +21,13 @@ module Web =
     else
       Response.response HTTP_500 (Encoding.UTF8.GetBytes HTTP_500.message) ctx
 
-  /// Starts the web server asynchronously.
+  /// Starts the web server.
   ///
-  /// Returns the webserver as a tuple of 1) an async computation that yields startup
-  /// metrics DTOs when the web server is ready to serve requests, and 2) an async computation
-  /// that yields when the web server is being shut down and is being terminated. The async values
-  /// returned are not 'hot' in the sense that they have started running, so you must manually
-  /// start the 'server' (second item in tuple), as this starts the TcpListener.
-  /// Have a look at the example and the unit tests for more documentation.
-  /// In other words: don't block on 'listening' unless you have started the server.
-  /// The return value from 'listening' (first item in tuple) gives you some metrics on
-  /// how quickly suave started.
+  /// Returns 1) a Job that yields startup metrics when the listener is bound,
+  /// and 2) a Task that completes when the server has shut down. The server
+  /// Task starts accepting as soon as this function returns; wait on the Job
+  /// (see `waitStarted`) before sending traffic. The Task exists because the
+  /// TCP accept loop is built on BCL `Task`/`Socket`.
   let startWebServerAsync (config : SuaveConfig) (webpart : WebPart) =
     ServerKey.validate config.serverKey |> ignore
 
@@ -61,7 +58,11 @@ module Web =
     let servers =
        List.map (toRuntime >> startWebWorker) config.bindings
 
-    let listening = servers |> Seq.map fst |> Async.Parallel
+    let listening =
+      servers
+      |> Seq.map fst
+      |> Job.conCollect
+      |> Job.map Array.ofSeq
     let serverTasks = servers |> Seq.map snd |> Seq.toArray
     // The last sweep runs when every server task has finished - its acceptors
     // stopped and the connections they started drained - rather than when
@@ -78,6 +79,9 @@ module Web =
           Compression.cleanup compressionFolder |> ignore
       } :> Task
     listening, server
+
+  /// Block until `startWebServerAsync`'s listening Job reports the bound endpoints.
+  let waitStarted (listening: Job<_>) = Hopac.run listening
 
   /// Runs the web server and blocks waiting for the asynchronous workflow to be cancelled or
   /// it returning itself.

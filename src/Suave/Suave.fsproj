@@ -4,8 +4,8 @@
     <AssemblyName>Suave</AssemblyName>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <IsAotCompatible>true</IsAotCompatible>
-    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
   <OtherFlags>--warn:3 </OtherFlags>
   </PropertyGroup>
   <ItemGroup>

@@ -2,6 +2,8 @@
 
 module Http2 =
 
+  open Hopac
+
   let connectionPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
   type ErrorCode =
@@ -1429,10 +1431,10 @@ module Http2 =
     /// Serialise a single frame write through the connection's write mutex.
     /// Every outgoing frame goes through here so concurrent stream responses
     /// cannot interleave their frame bytes.
-    member private x.writeFrameSerialized(encInfo: EncodeInfo, payload: FramePayload) = async {
-      do! Async.AwaitTask (writeMutex.WaitAsync())
+    member private x.writeFrameSerialized(encInfo: EncodeInfo, payload: FramePayload) = job {
+      do! Job.awaitUnitTask (writeMutex.WaitAsync())
       try
-        let! _ = Async.AwaitTask ((x.write (encInfo, payload)).AsTask())
+        let! _ = Job.awaitTask ((x.write (encInfo, payload)).AsTask())
         return ()
       finally
         writeMutex.Release() |> ignore
@@ -1445,7 +1447,7 @@ module Http2 =
     /// does NOT set END_STREAM and a trailing HEADERS frame with END_STREAM
     /// is emitted after the body.
     member x.writeResponseOnStream (streamId: int32) (response: HttpResult)
-                                   (trailers: (string * string) list) = async {
+                                   (trailers: (string * string) list) = job {
       // 1. HEADERS frame with the response pseudo-header and regular headers.
       let responseHeaderList =
         (":status", response.status.code.ToString()) :: response.headers
@@ -1503,7 +1505,7 @@ module Http2 =
             let available =
               min connectionOutboundWindow.available streamWindow.available
             if available <= 0 then
-              do! Async.AwaitTask waiter.Task
+              do! Job.awaitTask waiter.Task
             else
               let remaining = bodyBytes.Length - offset
               let chunkSize =
@@ -1550,7 +1552,7 @@ module Http2 =
     }
 
     /// Send a connection-level GOAWAY and stop the read loop. Idempotent.
-    member x.sendGoAwayAndStop (errorCode: ErrorCode) = async {
+    member x.sendGoAwayAndStop (errorCode: ErrorCode) = job {
       if !alive then
         alive := false
         try
@@ -1563,7 +1565,7 @@ module Http2 =
 
     /// Reset a single stream with the given error code. Stream-level
     /// failures don't tear down the connection.
-    member x.resetStream (streamId: int32) (errorCode: ErrorCode) = async {
+    member x.resetStream (streamId: int32) (errorCode: ErrorCode) = job {
       try
         do! x.writeFrameSerialized(
               { flags = 0uy; streamIdentifier = streamId; padding = None },
@@ -1576,7 +1578,7 @@ module Http2 =
 
     /// Build an HttpRequest from a completed stream's decoded headers + body,
     /// run the webpart, and write the response back on the same stream.
-    member private x.dispatchStream (streamId: int32) (stream: StreamData) (webPart: WebPart) = async {
+    member private x.dispatchStream (streamId: int32) (stream: StreamData) (webPart: WebPart) = job {
       if stream.dispatched then return () else
       stream.dispatched <- true
       // RFC 7540 §8.1.2.6: if `content-length` is advertised, the sum of the
@@ -1642,7 +1644,7 @@ module Http2 =
     /// `writeResponseOnStream`. Exceptions are swallowed and logged: a
     /// failing WebPart must not bring down the whole connection.
     member private x.dispatchStreamAsync (streamId: int32) (stream: StreamData) (webPart: WebPart) =
-      Async.Start (async {
+      Hopac.start (job {
         try
           do! x.dispatchStream streamId stream webPart
         with ex ->
@@ -1654,7 +1656,7 @@ module Http2 =
     /// a trailing block (the stream had already opened with body), record
     /// the fields as request trailers and (if END_STREAM) dispatch.
     member private x.completeHeaderBlock (streamId: int32) (fragment: byte[])
-                                 (endStream: bool) (webPart: WebPart) = async {
+                                 (endStream: bool) (webPart: WebPart) = job {
       match getOrCreateStream streamId true with
       | Result.Error err ->
         do! x.sendGoAwayAndStop err
@@ -1722,7 +1724,7 @@ module Http2 =
     /// Apply a non-ACK SETTINGS frame from the peer and emit a SETTINGS-ACK.
     /// Also adjusts every outbound stream window by the delta between the
     /// old and new SETTINGS_INITIAL_WINDOW_SIZE (RFC 7540 §6.9.2).
-    member x.applyPeerSettings (newSettings: Settings) = async {
+    member x.applyPeerSettings (newSettings: Settings) = job {
       let oldInitial = peerSettings.initialWindowSize
       let newInitial = newSettings.initialWindowSize
       peerSettings <- newSettings
@@ -1743,7 +1745,7 @@ module Http2 =
 
     /// Dispatch a single received frame.
     member private x.handleFrame (header: FrameHeader) (payload: FramePayload)
-                                 (webPart: WebPart) = async {
+                                 (webPart: WebPart) = job {
       // While a header block is in flight, only CONTINUATION on the same
       // stream is legal (RFC 7540 §6.10).
       match pendingReassembly with
@@ -1890,14 +1892,14 @@ module Http2 =
     }
 
     member x.send (r:HttpRequest) =
-      Async.Start (procQueue.AsyncAdd <| Request r)
+      Hopac.start (procQueue.Add (Request r))
 
     member x.stop() =
-      Async.Start (procQueue.AsyncAdd <| Stop)
+      Hopac.start (procQueue.Add Stop)
       closeEvent.WaitOne() |> ignore
 
     member x.get() =
-      procQueue.AsyncGet()
+      procQueue.Get()
 
     /// Best-effort emit of a connection-level GOAWAY with the given error
     /// code prior to aborting the socket. Used by the preface mismatch
@@ -1964,10 +1966,10 @@ module Http2 =
     /// our connection is torn down (GOAWAY sent/received) or the transport
     /// reports an error. Returns when the loop terminates so the caller can
     /// recycle the connection.
-    member x.runReadLoop (webPart: WebPart) : Async<unit> = async {
+    member x.runReadLoop (webPart: WebPart) : Job<unit> = job {
       let mutable shouldRun = true
       while shouldRun && !alive do
-        let! readResult = Async.AwaitTask ((x.readRaw()).AsTask())
+        let! readResult = Job.awaitTask ((x.readRaw()).AsTask())
         match readResult with
         | Ok (header, rawPayload) ->
           try
@@ -2036,7 +2038,7 @@ module Http2 =
     /// half-closed from the client toward the server (the request body has
     /// been fully delivered as the HTTP/1.1 upgrade request).
     member x.dispatchUpgradeRequest (originalRequest: HttpRequest)
-                                    (webPart: WebPart) : Async<unit> = async {
+                                    (webPart: WebPart) : Job<unit> = job {
       // Seed the stream table with stream 1 in HalfClosedRemote state so the
       // response side can proceed.
       highestClientStreamId <- 1
@@ -2075,8 +2077,8 @@ module Http2 =
     /// stream 1, then enters the read/dispatch loop until the connection is
     /// closed.
     member x.run (originalRequest: HttpRequest option) (webPart: WebPart)
-        : Async<Result<unit, Error>> = async {
-      let! prefaceResult = Async.AwaitTask ((x.start()).AsTask())
+        : Job<Result<unit, Error>> = job {
+      let! prefaceResult = Job.awaitTask ((x.start()).AsTask())
       match prefaceResult with
       | Result.Error e -> return Result.Error e
       | Ok () ->
@@ -2088,7 +2090,7 @@ module Http2 =
           // here keeps the connection alive when the WebPart throws: we
           // log to stderr but don't tear down the loop. (A future
           // improvement is to send RST_STREAM on stream 1 here.)
-          Async.Start (async {
+          Hopac.start (job {
             try
               do! x.dispatchUpgradeRequest req webPart
             with ex ->
@@ -2127,8 +2129,8 @@ module Http2 =
     /// by the HTTP/1.1 request-line reader; this runs the rest of the
     /// preface exchange and then enters the read/dispatch loop until the
     /// connection is closed.
-    member x.runPriorKnowledge (webPart: WebPart) : Async<Result<unit, Error>> = async {
-      let! prefaceResult = Async.AwaitTask ((x.startPriorKnowledge()).AsTask())
+    member x.runPriorKnowledge (webPart: WebPart) : Job<Result<unit, Error>> = job {
+      let! prefaceResult = Job.awaitTask ((x.startPriorKnowledge()).AsTask())
       match prefaceResult with
       | Result.Error e -> return Result.Error e
       | Ok () ->
@@ -2136,22 +2138,22 @@ module Http2 =
         return Ok ()
     }
 
-    member x.writeResponseToFrame (response: HttpResult) = async {
+    member x.writeResponseToFrame (response: HttpResult) = job {
       // Backward-compatible shim: writes the response on stream 1 with no
       // trailers. Retained because earlier code referenced it.
       do! x.writeResponseOnStream 1 response []
     }
 
     member x.writeLoop (ctxOuter : HttpContext) (webPart: WebPart) =
-     async {
+     job {
        // send a SETTINGS-ACK frame for any pre-loop client settings.
        let encInfo = { flags = 1uy (*ack*); streamIdentifier = 0;  padding = None}
-       let! _ = Async.AwaitTask ((x.write (encInfo,Settings(true,defaultSetting))).AsTask())
+       let! _ = Job.awaitTask ((x.write (encInfo,Settings(true,defaultSetting))).AsTask())
        while !alive do
          let! a = x.get ()
          match a with
          | Request req ->
-             let! r = webPart { ctxOuter with request = req}
+             let! r = webPart { ctxOuter with request = req }
              match r with
              | Some ctx ->
                do! x.writeResponseToFrame ctx.response
@@ -2159,7 +2161,7 @@ module Http2 =
                return ()
          | Stop ->
            let encInfo = { flags = 0uy; streamIdentifier = 0;  padding = None}
-           let! _ = Async.AwaitTask ((x.write (encInfo, GoAway(11,ErrorCode.NoError,[||]))).AsTask())
+           let! _ = Job.awaitTask ((x.write (encInfo, GoAway(11,ErrorCode.NoError,[||]))).AsTask())
            alive := false
            closeEvent.Set() |> ignore
        }
@@ -2267,7 +2269,7 @@ module Http2 =
           // upgrade request becomes stream 1 (RFC 7540 §3.2: implicitly
           // half-closed from the client toward the server).
           let conn = Http2Connection(facade)
-          let! runResult = conn.run (Some request) facade.Webpart
+          let runResult = Hopac.run (conn.run (Some request) facade.Webpart)
           match runResult with
           | Ok () -> return Ok false
           | Result.Error e -> return Result.Error e
@@ -2305,7 +2307,7 @@ module Http2 =
       task {
         facade.Connection.isLongLived <- true
         let conn = Http2Connection(facade)
-        let! runResult = conn.runPriorKnowledge facade.Webpart
+        let runResult = Hopac.run (conn.runPriorKnowledge facade.Webpart)
         match runResult with
         | Ok () -> return Ok false
         | Result.Error e -> return Result.Error e

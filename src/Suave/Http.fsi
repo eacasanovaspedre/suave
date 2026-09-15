@@ -8,6 +8,7 @@ module Http =
   open System.Net
   open Suave.Sockets
   open Suave
+  open Hopac
 
   /// These are the known HTTP methods. See http://www.w3.org/Protocols/rfc2616/rfc2616-sec9.html
   type HttpMethod =
@@ -314,8 +315,15 @@ module Http =
 
     member clientProtoTrustProxy : string
 
-  /// A `WebPart` is an asynchronous function that transforms the `HttpContext`.  An asynchronous return
-  /// value of `None` indicates 'did not handle'.
+    /// Commits when the connection is dying (peer close, shutdown, health-checker).
+    /// Race this against handler Alts: `work <|> ctx.abort`.
+    member abort : Alt<unit>
+
+    /// Cancelled when `abort` is filled. For BCL I/O that takes a CancellationToken.
+    member abortToken : Threading.CancellationToken
+
+  /// A `WebPart` is an alternative that transforms the `HttpContext`.
+  /// A result of `None` indicates 'did not handle'.
 
   /// An error handler takes the exception, a programmer-provided message, a
   /// request (that failed) and returns an asynchronous workflow for the handling

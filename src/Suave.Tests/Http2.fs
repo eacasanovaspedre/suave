@@ -7,6 +7,7 @@ open Expecto
 
 open Suave
 open Suave.Http2
+open Hopac
 open Suave.Hpack
 open Suave.Huffman
 
@@ -1069,7 +1070,7 @@ let h2cPriorKnowledgeIntegrationTests (_ : SuaveConfig) =
     let ready, serverTask =
       Web.startWebServerAsync cfg (Suave.Successful.OK "h2c prior-knowledge")
     try
-      ready |> Async.RunSynchronously |> ignore
+      waitStarted ready |> ignore
       body port
     finally
       cts.Cancel()
@@ -1424,7 +1425,7 @@ let alpnTests (_ : SuaveConfig) =
     let ready, serverTask =
       Web.startWebServerAsync cfg (Suave.Successful.OK "alpn test")
     try
-      ready |> Async.RunSynchronously |> ignore
+      waitStarted ready |> ignore
       body port
     finally
       cts.Cancel()
@@ -1456,7 +1457,7 @@ let alpnTests (_ : SuaveConfig) =
 /// empty context and assert that it succeeded.
 let private runWebPartOnEmpty (part: WebPart) =
   let ctx = HttpContext.empty
-  match Async.RunSynchronously (part ctx) with
+  match Hopac.run (part ctx) with
   | Some c -> c
   | None -> failwith "WebPart returned None"
 
@@ -1522,9 +1523,9 @@ let trailersTests (_ : SuaveConfig) =
     testCase "set replaces an earlier value with the same name (case-insensitive)" <| fun _ ->
       let ctx =
         HttpContext.empty
-        |> (fun c -> Async.RunSynchronously (Http2.Trailers.set "X-Checksum" "old" c))
+        |> (fun c -> Hopac.run (Http2.Trailers.set "X-Checksum" "old" c))
         |> Option.get
-        |> (fun c -> Async.RunSynchronously (Http2.Trailers.set "x-checksum" "new" c))
+        |> (fun c -> Hopac.run (Http2.Trailers.set "x-checksum" "new" c))
         |> Option.get
       Expect.equal (Http2.Trailers.get ctx) [ "x-checksum", "new" ]
                    "later set with the same name wins, comparison is case-insensitive"
@@ -1532,9 +1533,9 @@ let trailersTests (_ : SuaveConfig) =
     testCase "set preserves insertion order across distinct names" <| fun _ ->
       let ctx =
         HttpContext.empty
-        |> (fun c -> Async.RunSynchronously (Http2.Trailers.set "x-first" "1" c))
+        |> (fun c -> Hopac.run (Http2.Trailers.set "x-first" "1" c))
         |> Option.get
-        |> (fun c -> Async.RunSynchronously (Http2.Trailers.set "x-second" "2" c))
+        |> (fun c -> Hopac.run (Http2.Trailers.set "x-second" "2" c))
         |> Option.get
       Expect.equal (Http2.Trailers.get ctx)
                    [ "x-first", "1"; "x-second", "2" ]
@@ -1543,9 +1544,9 @@ let trailersTests (_ : SuaveConfig) =
     testCase "setMany replaces the entire list" <| fun _ ->
       let initial =
         HttpContext.empty
-        |> (fun c -> Async.RunSynchronously (Http2.Trailers.set "x-old" "v" c))
+        |> (fun c -> Hopac.run (Http2.Trailers.set "x-old" "v" c))
         |> Option.get
-      let ctx = Async.RunSynchronously (Http2.Trailers.setMany [ "x-new", "v" ] initial)
+      let ctx = Hopac.run (Http2.Trailers.setMany [ "x-new", "v" ] initial)
       Expect.equal (Http2.Trailers.get (Option.get ctx))
                    [ "x-new", "v" ]
                    "setMany overwrites previously-recorded trailers"
@@ -1620,9 +1621,9 @@ let pushTests (_ : SuaveConfig) =
     testCase "push appends multiple promises in order" <| fun _ ->
       let ctx =
         HttpContext.empty
-        |> (fun c -> Async.RunSynchronously (Http2.Push.push "/a.css" [] c))
+        |> (fun c -> Hopac.run (Http2.Push.push "/a.css" [] c))
         |> Option.get
-        |> (fun c -> Async.RunSynchronously (Http2.Push.push "/b.js" [] c))
+        |> (fun c -> Hopac.run (Http2.Push.push "/b.js" [] c))
         |> Option.get
       let paths = Http2.Push.get ctx |> List.map (fun p -> p.path)
       Expect.equal paths [ "/a.css"; "/b.js" ] "promises recorded in order"

@@ -3,6 +3,7 @@ namespace Suave
 open System
 open System.Collections.Generic
 open Suave
+open Hopac
 
 /// Module for efficient HTTP routing with path parameter support
 module Router =
@@ -91,39 +92,32 @@ module Router =
       { router with patternRoutes = router.patternRoutes @ [entry] }
 
   /// Try to match and execute a route
-  let tryRoute (router: Router) (ctx: HttpContext) : Async<HttpContext option> =
-    async {
-      let path = ctx.request.path
-      let method = ctx.request.method
-      
-      // First try exact match (O(1))
-      if router.exactRoutes.ContainsKey(path, method) then
-        let handler = router.exactRoutes.[path, method]
-        return! handler ctx
-      else
-        // Try pattern routes in order
-        let rec tryPatterns = function
-          | [] -> async { return None }
-          | entry :: rest ->
-              async {
-                if entry.methods |> List.contains method then
-                  match matchPattern entry.pattern path with
-                  | Some parameters ->
-                      // Store parameters in userState for retrieval
-                      for (key, value) in parameters do
-                        ctx.userState.[$"route_{key}"] <- value
-                      let! result = entry.handler ctx
-                      match result with
-                      | Some _ as res -> return res
-                      | None -> return! tryPatterns rest
-                  | None ->
-                      return! tryPatterns rest
-                else
-                  return! tryPatterns rest
-              }
-        
-        return! tryPatterns router.patternRoutes
-    }
+  let tryRoute (router: Router) (ctx: HttpContext) : Alt<HttpContext option> =
+    let path = ctx.request.path
+    let method = ctx.request.method
+    if router.exactRoutes.ContainsKey(path, method) then
+      let handler = router.exactRoutes.[path, method]
+      handler ctx
+    else
+      let rec tryPatterns = function
+        | [] -> fail
+        | entry :: rest ->
+          Alt.prepareJob <| fun () ->
+            job {
+              if entry.methods |> List.contains method then
+                match matchPattern entry.pattern path with
+                | Some parameters ->
+                    for (key, value) in parameters do
+                      ctx.userState.[$"route_{key}"] <- value
+                    match! entry.handler ctx with
+                    | Some _ as res -> return Alt.always res
+                    | None -> return tryPatterns rest
+                | None ->
+                    return tryPatterns rest
+              else
+                return tryPatterns rest
+            }
+      tryPatterns router.patternRoutes
 
   /// Get a route parameter from context
   let routeParam (name: string) (ctx: HttpContext) : string option =

@@ -1,11 +1,13 @@
-﻿module Suave.Operators
-
-let (>>=) a b =
-  WebPart.bind b a
+module Suave.Operators
 
 let (>=>) a b =
   WebPart.compose a b
 
+let orElse a b =
+  WebPart.tryThen a b
+
+/// Sequential try-then. Not Hopac `<|>` (concurrent Alt). Prefer `orElse` when
+/// `Hopac.Infixes` is also open.
 let inline (<|>) a b =
   WebPart.tryThen a b
 
@@ -21,6 +23,5 @@ let (||@) opt errorMsg =
   match opt with
   | Some x ->
     Choice1Of2 x
-
   | None ->
     Choice2Of2 errorMsg

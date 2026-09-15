@@ -11,7 +11,8 @@ open Microsoft.FSharp.Reflection
 open Suave.Utils
 open Suave.Successful
 open Suave.Files
-open Suave.Utils.Async
+open Suave.WebPart
+open Hopac
 
 // -------------------------------------------------------------------------------------------------
 // Registering things with DotLiquid
@@ -64,19 +65,19 @@ module internal Impl =
   // Parsing and loading DotLiquid templates and caching the results
   // -------------------------------------------------------------------------------------------------
 
-  /// Memoize asynchronous function. An item is recomputed when `isValid` returns `false`
-  let asyncMemoize isValid f =
+  /// Memoize a Job-returning function. An item is recomputed when `isValid` returns `false`
+  let jobMemoize isValid (f: _ -> Job<_>) =
     let cache = ConcurrentDictionary<_ , _>()
-    fun x -> async {
-      match cache.TryGetValue x with
-      | true, res when isValid x res ->
-        return res
-
-      | _ ->
-        let! res = f x
-        cache.[x] <- res
-        return res
-    }
+    fun x ->
+      job {
+        match cache.TryGetValue x with
+        | true, res when isValid x res ->
+          return res
+        | _ ->
+          let! res = f x
+          cache.[x] <- res
+          return res
+      }
 
   type Renderer<'model> = string -> 'model -> string
 
@@ -89,25 +90,26 @@ module internal Impl =
 
     /// Asynchronously loads a template & remembers the last write time
   /// (so that we can automatically reload the template when file changes)
-  let fileTemplate (typ, fileName: string) = async {
-    let writeTime = File.GetLastWriteTime fileName
-    use file = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
-    use reader = new StreamReader(file)
-    let! dotLiquidTemplate = reader.ReadToEndAsync()
-    return writeTime, parseTemplate dotLiquidTemplate typ
-  }
+  let fileTemplate (typ, fileName: string) =
+    job {
+      let writeTime = File.GetLastWriteTime fileName
+      use file = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+      use reader = new StreamReader(file)
+      let! dotLiquidTemplate = Job.awaitTask (reader.ReadToEndAsync())
+      return writeTime, parseTemplate dotLiquidTemplate typ
+    }
 
   /// Load template & memoize & automatically reload when the file changes
   let fileTemplateMemoized =
     fileTemplate
-    |> asyncMemoize (fun (_, templatePath) (lastWrite, _) ->
+    |> jobMemoize (fun (_, templatePath) (lastWrite, _) ->
       File.GetLastWriteTime templatePath <= lastWrite)
 
   let stringTemplate (typ, stringTemplate) =
-    async.Return ((), parseTemplate stringTemplate typ)
+    Job.result ((), parseTemplate stringTemplate typ)
 
   let stringTemplateMemoized =
-    stringTemplate |> asyncMemoize (fun _ _ -> (* always valid *) true)
+    stringTemplate |> jobMemoize (fun _ _ -> (* always valid *) true)
 
 // -------------------------------------------------------------------------------------------------
 // Public API
@@ -145,13 +147,13 @@ let setTemplatesDir dir =
 /// Renders the liquid template given.
 let renderPageString (template : string) (model : 'm) =
   Impl.stringTemplateMemoized (typeof<'m>, template)
-  |> Async.map (fun (_, renderer) ->
+  |> Job.map (fun (_, renderer) ->
     renderer ModelKey (box model))
 
 /// Renders the liquid template given a full path.
 let renderPageFile fileFullPath (model : 'm) =
   Impl.fileTemplateMemoized (typeof<'m>, fileFullPath)
-  |> Async.map (fun (writeTime, renderer) ->
+  |> Job.map (fun (writeTime, renderer) ->
     renderer ModelKey (box model))
 
 /// Render a page using DotLiquid template. Takes a path (relative to the directory specified
@@ -172,10 +174,11 @@ let page fileName model : WebPart =
       | Some root ->
         Path.Combine(root, fileName)
 
-    async {
-      let! rendered = renderPageFile fullPath model
-      return! OK rendered ctx
-    }
+    ofJob (
+      job {
+        let! rendered = renderPageFile fullPath model
+        return! OK rendered ctx
+      })
 
 /// Register functions from a module as filters available in DotLiquid templates.
 /// For example, the following snippet lets you write `{{ model.Total | nice_num }}`:

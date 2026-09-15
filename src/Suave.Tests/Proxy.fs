@@ -210,7 +210,7 @@ let private startTlsProxy (upstreamPort : int) =
         cancellationToken = cts.Token }
   let ready, serverTask =
     Web.startWebServerAsync proxyCfg (proxy (Uri(sprintf "http://127.0.0.1:%d" upstreamPort)))
-  ready |> Async.RunSynchronously |> ignore
+  waitStarted ready |> ignore
   let shutdown () =
     cts.Cancel()
     try serverTask.Wait(TimeSpan.FromSeconds 5.0) |> ignore with _ -> ()

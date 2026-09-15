@@ -6,6 +6,7 @@ open Suave.Utils
 open Suave.Cookie
 open Suave.State.CookieStateStore
 open Suave.Operators
+open Hopac
 
 let UserNameKey = "userName"
 
@@ -33,26 +34,27 @@ let inline private addUserName username ctx =
     ctx.userState.Add(UserNameKey, box username)
   ctx
 
-let authenticateBasicAsync f protectedPart ctx =
-  async {
-    let p = ctx.request
-    match p.header "authorization" with
-    | Choice1Of2 header ->
-      match tryParseBasicAuthenticationToken header with
-      | Some (username, password) ->
-          let! authenticated = f (username, password)
-          if authenticated then
-            return! protectedPart (addUserName username ctx)
-          else
-            return! challenge ctx
-      | None ->
-          return! challenge ctx
-    | Choice2Of2 _ ->
-      return! challenge ctx
-  }
+let authenticateBasicAsync (f: _ -> Job<bool>) protectedPart ctx =
+  Alt.prepareJob <| fun () ->
+    job {
+      let p = ctx.request
+      match p.header "authorization" with
+      | Choice1Of2 header ->
+        match tryParseBasicAuthenticationToken header with
+        | Some (username, password) ->
+            let! authenticated = f (username, password) |> asJob
+            if authenticated then
+              return protectedPart (addUserName username ctx)
+            else
+              return challenge ctx
+        | None ->
+            return challenge ctx
+      | Choice2Of2 _ ->
+          return challenge ctx
+    }
 
 let authenticateBasic f protectedPart ctx =
-  authenticateBasicAsync (f >> async.Return) protectedPart ctx
+  authenticateBasicAsync (f >> Job.result) protectedPart ctx
 
 module internal Utils =
   /// Generates a string key from the available characters with the given key size

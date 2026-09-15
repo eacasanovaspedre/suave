@@ -117,7 +117,7 @@ let runWithFactory factory config webParts : SuaveTestCtx =
   let config2 = { config with cancellationToken = cts.Token; bufferSize = 128; maxOps = 10 }
 
   let listening, (server) = factory { config with cancellationToken = cts .Token(*; logger = Targets.create Warn [||]*) } webParts
-  listening |> Async.RunSynchronously |> ignore // wait for the server to start listening
+  waitStarted listening |> ignore // wait for the server to start listening
 
   { cts = cts
     suaveConfig = config2

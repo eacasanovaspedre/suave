@@ -3,6 +3,7 @@ namespace Suave
 open Suave.Operators
 open Suave.Sockets
 open System.Threading.Tasks
+open Hopac
 
 module Response =
 
@@ -287,7 +288,6 @@ module ServerErrors =
   let INVALID_HTTP_VERSION = invalid_http_version (Encoding.UTF8.GetBytes HTTP_505.message)
 
 module Filters =
-  open Suave.Utils.AsyncExtensions
   open System
   open System.Text
   open System.Text.RegularExpressions
@@ -297,38 +297,38 @@ module Filters =
       if b then Some x else None
 
   let path pathAfterDomain (x : HttpContext) =
-    async.Return (Option.iff (pathAfterDomain = x.request.path) x)
+    Alt.always (Option.iff (pathAfterDomain = x.request.path) x)
 
   let pathCi pathAfterDomain (x : HttpContext) =
-    async.Return (Option.iff (String.Equals(pathAfterDomain, x.request.path, StringComparison.CurrentCultureIgnoreCase)) x)
+    Alt.always (Option.iff (String.Equals(pathAfterDomain, x.request.path, StringComparison.CurrentCultureIgnoreCase)) x)
 
   let pathStarts (pathAfterDomainSubstr:string) (x : HttpContext) =
-    async.Return (Option.iff (x.request.path.StartsWith pathAfterDomainSubstr) x)
+    Alt.always (Option.iff (x.request.path.StartsWith pathAfterDomainSubstr) x)
 
   let pathStartsCi pathAfterDomainSubstr (x : HttpContext) =
-    async.Return (Option.iff (x.request.path.StartsWith (pathAfterDomainSubstr, StringComparison.CurrentCultureIgnoreCase)) x)
+    Alt.always (Option.iff (x.request.path.StartsWith (pathAfterDomainSubstr, StringComparison.CurrentCultureIgnoreCase)) x)
 
   let url x = path x
 
   let ``method`` (method : HttpMethod) (x : HttpContext) =
-    async.Return (Option.iff (method = x.request.``method``) x)
+    Alt.always (Option.iff (method = x.request.``method``) x)
 
   let isSecure (x : HttpContext) =
-    async.Return (Option.iff x.runtime.matchedBinding.scheme.secure x)
+    Alt.always (Option.iff x.runtime.matchedBinding.scheme.secure x)
 
   let hasFlag flag (ctx : HttpContext) =
     if ctx.request.queryFlag flag then succeed ctx else fail
 
   let pathRegex pathAfterDomainRegex (x : HttpContext) =
-    async.Return (Option.iff (Regex.IsMatch(x.request.path, pathAfterDomainRegex)) x)
+    Alt.always (Option.iff (Regex.IsMatch(x.request.path, pathAfterDomainRegex)) x)
 
   let urlRegex x = pathRegex x
 
   let host hostname (x : HttpContext) =
-    async.Return (Option.iff (String.equalsOrdinalCI x.request.clientHostTrustProxy hostname) x)
+    Alt.always (Option.iff (String.equalsOrdinalCI x.request.clientHostTrustProxy hostname) x)
 
   let serverHost hostname (x : HttpContext) =
-    async.Return (Option.iff (String.equalsOrdinalCI x.request.host hostname) x)
+    Alt.always (Option.iff (String.equalsOrdinalCI x.request.host hostname) x)
 
   let clientHost hostname x = host hostname x
 
@@ -423,13 +423,12 @@ module Filters =
   let urlScanCi s x = pathScanCi s x
 
   let timeoutWebPart (timeout : TimeSpan) (child : WebPart) : WebPart =
-    fun (ctx : HttpContext) -> async {
-      try
-        return! Async.WithTimeout (timeout, child ctx)
-      with
-        | :? TimeoutException ->
-          return! Response.response HttpCode.HTTP_408 (Encoding.UTF8.GetBytes "Request Timeout") ctx
-          }
+    fun (ctx : HttpContext) ->
+      Alt.choose [
+        child ctx
+        timeOut timeout |> Alt.afterJob (fun () ->
+          Response.response HttpCode.HTTP_408 (Encoding.UTF8.GetBytes "Request Timeout") ctx)
+      ]
 
 /// not part of the public API at this point
 module ServeResource =

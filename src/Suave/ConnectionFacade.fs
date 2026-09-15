@@ -556,6 +556,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
     }
 
   member this.shutdown() =
+      Connection.signalAbort connection
       reader.cancelPendingReads()
       // Shutdown transport FIRST to unblock any waiting reads in readLoop
       // This prevents the readLoop from being stuck in transport.read() when we set running=false
@@ -566,6 +567,7 @@ type ConnectionFacade(connection: Connection, runtime: HttpRuntime, connectionPo
       // Clear the line buffer to prevent data leakage and ensure clean state for reuse
       Array.Clear(connection.lineBuffer)
       connection.lineBufferCount <- 0
+      Connection.resetAbort connection
       try connection.pipe.Writer.Complete() with _ -> ()
       try connection.pipe.Reader.Complete() with _ -> ()
       try connection.pipe.Reset() with _ -> ()

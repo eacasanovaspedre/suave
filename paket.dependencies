@@ -5,6 +5,7 @@ framework net10.0
 storage none
 
 nuget FSharp.Core >= 10.0.102
+nuget Hopac 0.5.1
 nuget Microsoft.Extensions.FileProviders.Embedded
 nuget DotLiquid
 nuget Websocket.Client
@@ -17,6 +18,7 @@ group Examples
   source https://api.nuget.org/v3/index.json
   framework net10.0
   nuget FSharp.Core
+  nuget Hopac 0.5.1
   nuget Topshelf.FSharp
   nuget Topshelf
   nuget Microsoft.Extensions.Logging

@@ -173,7 +173,7 @@ let validateEmailHandler : WebPart =
 
 // Password validation endpoint
 let validatePasswordHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "password" with
         | Choice1Of2 password ->
             match String.minLength 8 "password" password with
@@ -202,7 +202,7 @@ let validatePasswordHandler : WebPart =
 
 // Age validation endpoint (with parsing and range check)
 let validateAgeHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "age" with
         | Choice1Of2 ageStr ->
             // First parse to int
@@ -245,7 +245,7 @@ let validateAgeHandler : WebPart =
 
 // Username validation (alphanumeric and length)
 let validateUsernameHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "username" with
         | Choice1Of2 username ->
             // Check alphanumeric
@@ -318,7 +318,7 @@ let validateUrlHandler : WebPart =
 
 // Date validation endpoint (must be in the future)
 let validateDateHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "date" with
         | Choice1Of2 dateStr ->
             match Parse.parseDateTime "date" dateStr with
@@ -359,7 +359,7 @@ let validateDateHandler : WebPart =
 
 // Price validation endpoint (must be positive decimal)
 let validatePriceHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "price" with
         | Choice1Of2 priceStr ->
             match Parse.parseDecimal "price" priceStr with
@@ -400,7 +400,7 @@ let validatePriceHandler : WebPart =
 
 // Boolean validation endpoint
 let validateBoolHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "agreement" with
         | Choice1Of2 boolStr ->
             match Parse.parseBool "agreement" boolStr with
@@ -444,7 +444,7 @@ let validateGuidHandler : WebPart =
 
 // Tag validation endpoint (must be one of allowed values)
 let validateTagHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "tag" with
         | Choice1Of2 tag ->
             let allowedTags = ["bug"; "feature"; "docs"]
@@ -475,7 +475,7 @@ let validateTagHandler : WebPart =
 
 // Code pattern validation endpoint (must match ABC-1234 pattern)
 let validateCodeHandler : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
         match ctx.request.formData "code" with
         | Choice1Of2 code ->
             // Pattern: ABC-1234 (three uppercase letters, dash, four digits)

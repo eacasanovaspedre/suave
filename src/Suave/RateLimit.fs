@@ -3,6 +3,7 @@ namespace Suave
 open System
 open System.Collections.Concurrent
 open System.Threading
+open Suave.Operators
 
 /// Rate limiting module for Suave web server
 module RateLimit =
@@ -224,35 +225,19 @@ module RateLimit =
   /// Rate limiting WebPart that wraps another WebPart
   let rateLimit (config: RateLimitConfig) (protectedPart: WebPart) : WebPart =
     fun (ctx: HttpContext) ->
-      async {
-        let allowed = checkRateLimit config ctx
-        
-        if allowed then
-          // Request allowed - call the protected WebPart
-          return! protectedPart ctx
-        else
-          // Rate limit exceeded - write 429 response
-          let message = 
-            config.limitExceededMessage 
-            |> Option.defaultValue "Rate limit exceeded. Please try again later."
-          
-          // Set headers and write response
-          let! ctx1 =
-            match config.retryAfter with
-            | Some seconds -> Writers.setHeader "Retry-After" (string seconds) ctx
-            | None -> async.Return (Some ctx)
-          
-          match ctx1 with
-          | Some c1 ->
-              match! Writers.setHeader "X-RateLimit-Limit" (string config.maxRequests) c1 with
-              | Some c2 ->
-                  // Write the 429 response
-                  return! RequestErrors.TOO_MANY_REQUESTS message c2
-              | None ->
-                  return None
-          | None ->
-              return None
-      }
+      if checkRateLimit config ctx then
+        protectedPart ctx
+      else
+        let message =
+          config.limitExceededMessage
+          |> Option.defaultValue "Rate limit exceeded. Please try again later."
+        let withRetry =
+          match config.retryAfter with
+          | Some seconds -> Writers.setHeader "Retry-After" (string seconds)
+          | None -> succeed
+        (withRetry
+         >=> Writers.setHeader "X-RateLimit-Limit" (string config.maxRequests)
+         >=> RequestErrors.TOO_MANY_REQUESTS message) ctx
 
   /// Create a rate limiter with requests per second
   let perSecond (requests: int) =

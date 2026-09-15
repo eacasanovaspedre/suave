@@ -19,7 +19,7 @@ let listening, server = startWebServerAsync config (choose [ GET >=> browseHome 
 Task.WaitAll server
 
 // wait for the server to start listening
-listening |> Async.RunSynchronously |> ignore
+waitStarted listening |> ignore
 
 async {
     while true do

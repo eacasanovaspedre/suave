@@ -71,7 +71,7 @@ let main argv =
         cancellationToken = cts.Token }
 
   let ready, server = Web.startWebServerAsync cfg app
-  ready |> Async.RunSynchronously |> ignore
+  waitStarted ready |> ignore
   // Single-line readiness marker that the CI workflow parses.
   Console.WriteLine(sprintf "listening on %d" (int port))
   Console.Out.Flush()

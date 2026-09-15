@@ -476,6 +476,14 @@ module Http =
     member x.clientProtoTrustProxy =
       x.clientProto true [ "x-forwarded-proto" ]
 
+    /// Commits when the connection is dying. Race this against handler Alts.
+    member x.abort : Hopac.Alt<unit> =
+      x.connection.abort :> Hopac.Alt<unit>
+
+    /// Cancelled when `abort` is filled. Pass to BCL I/O (`HttpClient`, streams).
+    member x.abortToken : Threading.CancellationToken =
+      x.connection.abortCts.Token
+
   and ErrorHandler = Exception -> String -> WebPart<HttpContext>
 
   type WebPart = WebPart<HttpContext>
@@ -500,7 +508,7 @@ module Http =
 
     let empty =
       { serverKey         = Crypto.generateKey ServerKeyLength
-        errorHandler      = fun _ _ -> fun _ -> async.Return None
+        errorHandler      = fun _ _ -> fun _ -> fail
         mimeTypesMap      = fun _ -> None
         homeDirectory     = "."
         compressionFolder = "."

@@ -9,6 +9,7 @@ open Suave.Operators
 open Suave.Filters
 open Suave.Authentication
 open Suave.Successful
+open Hopac
 open Suave.ServerErrors
 
 open Suave.Tests.TestUtilities
@@ -63,7 +64,7 @@ let authTests cfg =
 
     testCase "add username to userstate for protectedPart (async)" <| fun _ ->
 
-      let authenticate credentials = async { return credentials = ("foo", "bar") }
+      let authenticate credentials = Job.result (credentials = ("foo", "bar"))
       let app = GET >=> authenticateBasicAsync authenticate okUser
 
       let _, res = runWithConfig app |> req "/protected" (fun reqmsg -> reqmsg.Headers.Authorization <- AuthenticationHeaderValue("Basic", basicCredentials); reqmsg)

@@ -7,17 +7,14 @@ open Suave.Operators
 open Suave.Testing
 open System.IO
 open System.Text
+open Hopac
 
 [<Tests>]
 let streamTests (cfg : SuaveConfig) =
   let expected = String.replicate 16384 "Hello, world.\n"
 
   let makeStream =
-    async {
-      let stream = new MemoryStream(Encoding.UTF8.GetBytes expected)
-
-      return stream :> Stream
-    }
+    Job.thunk (fun () -> new MemoryStream(Encoding.UTF8.GetBytes expected) :> Stream)
 
   let webPart =
     choose

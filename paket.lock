@@ -29,6 +29,8 @@ NUGET
       FSharp.Core (>= 4.2.3)
     FSharp.Core (10.0.102)
     Gee.External.Capstone (2.3)
+    Hopac (0.5.1)
+      FSharp.Core (>= 4.5.2)
     Iced (1.21)
     Microsoft.CodeAnalysis.Analyzers (3.11)
     Microsoft.CodeAnalysis.Common (5.0)
@@ -147,6 +149,8 @@ RESTRICTION: == net10.0
 NUGET
   remote: https://api.nuget.org/v3/index.json
     FSharp.Core (10.0.102)
+    Hopac (0.5.1)
+      FSharp.Core (>= 4.5.2)
     Microsoft.Extensions.Configuration (10.0.2)
       Microsoft.Extensions.Configuration.Abstractions (>= 10.0.2)
       Microsoft.Extensions.Primitives (>= 10.0.2)

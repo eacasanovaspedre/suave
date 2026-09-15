@@ -6,6 +6,7 @@ open Suave.Utils
 open Suave.Sockets
 
 open System
+open Hopac
 
 #nowarn "3391"
 
@@ -402,13 +403,19 @@ type HttpOutput(connection: Connection, runtime: HttpRuntime) =
           do! this.Connection.flush()
            }
 
-  member this.executeTask task  = async {
-    try
-      let! q = task
-      return q
-    with ex ->
-      return! runtime.errorHandler ex "request failed" { HttpContext.empty with connection = connection; runtime = runtime }
-  }
+  member this.executeWebPart (wp : Alt<HttpContext option>) : Job<HttpContext option> =
+    let aborted =
+      Alt.afterFun (fun (_ : unit) -> (None : HttpContext option)) (connection.abort :> Alt<unit>)
+    job {
+      try
+        let! r = Alt.choose [ wp; aborted ]
+        return r
+      with ex ->
+        let! r =
+          runtime.errorHandler ex "request failed"
+            { HttpContext.empty with connection = connection; runtime = runtime }
+        return r
+    }
 
   member this.writeResponse (newCtx:HttpContext) =
     task{
@@ -426,8 +433,8 @@ type HttpOutput(connection: Connection, runtime: HttpRuntime) =
       try
         freshContext.request <- request
         freshContext.userState.Clear()
-        let task = webPart freshContext
-        match! this.executeTask task with 
+        let wp = webPart freshContext
+        match Hopac.run (this.executeWebPart wp) with 
         | Some ctx ->
           let! _ = this.writeResponse ctx
           let keepAlive =

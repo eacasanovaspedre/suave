@@ -3,6 +3,7 @@ namespace Suave.Sockets
 open System
 open System.Net
 open System.IO.Pipelines
+open System.Threading
 open System.Threading.Tasks
 open System.Runtime.CompilerServices
 open Suave.Sockets.Control
@@ -11,6 +12,7 @@ open System.Buffers
 open System.Runtime.InteropServices
 open Suave.Utils
 open Suave
+open Hopac
 
 /// A connection (TCP implied) is a thing that can read and write from a socket
 /// and that can be closed.
@@ -22,7 +24,11 @@ type Connection =
     lineBuffer    : byte array
     mutable lineBufferCount : int
     utf8Encoder   : Encoder
-    mutable isLongLived : bool }  // Flag for long-lived protocols (WebSocket, SSE, etc.)
+    mutable isLongLived : bool  // Flag for long-lived protocols (WebSocket, SSE, etc.)
+    /// Filled when the connection is dying (peer close, shutdown, health-checker).
+    mutable abort : IVar<unit>
+    /// Cancelled when `abort` is filled; for BCL I/O that takes a CancellationToken.
+    mutable abortCts : CancellationTokenSource }
 
   member x.ipAddr : IPAddress =
     x.socketBinding.ip
@@ -256,7 +262,9 @@ module Connection =
       lineBuffer    = [||]
       lineBufferCount = 0
       utf8Encoder = Encoding.UTF8.GetEncoder()
-      isLongLived = false }
+      isLongLived = false
+      abort = IVar()
+      abortCts = new CancellationTokenSource() }
 
   let inline receive (cn : Connection) (buf : ByteSegment) =
     cn.transport.read buf
@@ -271,3 +279,14 @@ module Connection =
 
   let inline shutdown (cn : Connection) =
     cn.transport.shutdown()
+
+  /// Signal that this connection is dying. Idempotent. Nacks waiting WebParts.
+  let signalAbort (cn : Connection) =
+    Hopac.start (IVar.tryFill cn.abort ())
+    try cn.abortCts.Cancel() with _ -> ()
+
+  /// Reset abort state when a pooled connection is reused.
+  let resetAbort (cn : Connection) =
+    cn.abort <- IVar()
+    try cn.abortCts.Dispose() with _ -> ()
+    cn.abortCts <- new CancellationTokenSource()

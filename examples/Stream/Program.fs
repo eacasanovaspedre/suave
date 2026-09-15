@@ -6,13 +6,10 @@ open Suave
 open Suave.Filters
 open Suave.Stream
 open Suave.Operators
+open Hopac
 
 let makeStream =
-    async {
-        let fileStream = File.Open("./kandinsky-composition-8.jpg", FileMode.Open, FileAccess.Read, FileShare.Read)
-
-        return fileStream :> Stream
-    }
+    Job.thunk (fun () -> File.Open("./kandinsky-composition-8.jpg", FileMode.Open, FileAccess.Read, FileShare.Read) :> Stream)
 
 let app =
     choose [

@@ -3,6 +3,7 @@
 open Expecto
 open Suave
 open System.IO
+open Hopac
 
 type M1 =
   { name : string }
@@ -16,19 +17,19 @@ let tests =
     yield testCase "can render a page" <| fun () ->
       let subject =
         DotLiquid.renderPageFile (combine "liquid/hello.liquid") { M1.name = "haf" }
-        |> Async.RunSynchronously
+        |> Hopac.run
       Expect.equal subject "Hi haf" "should render properly"
 
     yield testCase "can render a page & master" <| fun () ->
       let subject =
         DotLiquid.renderPageFile (combine "liquid/child.liquid") { M1.name = "haf2" }
-        |> Async.RunSynchronously
+        |> Hopac.run
       Expect.equal subject "Parent: Hi haf2"  "should render parent and child"
 
     yield testCase "can render from string" <| fun () ->
       let subject =
         DotLiquid.renderPageString "Hi {{ model.name }}" { M1.name = "haf3" }
-        |> Async.RunSynchronously
+        |> Hopac.run
 
       Expect.equal subject "Hi haf3" "should render Hello"
     ]

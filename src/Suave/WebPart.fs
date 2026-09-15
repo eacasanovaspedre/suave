@@ -1,70 +1,73 @@
 [<AutoOpen>]
 module Suave.WebPart
-(*
-SuaveTask of 'a is defined as `Async<'a option>`. It's implied that by returning None, the SuaveTask expects Suave to
-continue on to the next (in the `choose` below). Another name for `SuaveTask` is `AsyncOption` as can be seen in the
-builder definition below.
 
-WebPart of 'a is defined as a function that takes 'a and returns SuaveTask of 'a or AsyncOption of 'a
+open Hopac
 
-WebPart without a specific type parameter is understood as WebPart of HttpContext.
+type WebPart<'a> = 'a -> Alt<'a option>
 
-*)
-type WebPart<'a> = 'a -> Async<'a option>
-// WebPart
-let inline succeed x = async.Return (Some x)
-// SuaveTask
-let fail<'a> : Async<'a option> = async.Return (Option<'a>.None)
-// WebPart
-let never : WebPart<'a> = fun x -> fail
-// Operates on SuaveTask
-let bind (f: 'a -> Async<'b option>) (a: Async<'a option>) = async {
-  let! p = a
-  match p with
-  | None ->
-    return None
-  | Some q ->
-    let r = f q
-    return! r
-  }
-// Operates on SuaveTask
-let compose (first : 'a -> Async<'b option>) (second : 'b -> Async<'c option>)
-            : 'a -> Async<'c option> =
-  fun x ->
-    bind second (first x)
+let inline succeed x = Alt.always (Some x)
 
-type AsyncOptionBuilder() =
-  member this.Return(x:'a) : Async<'a option> = async { return Some x }
-  member this.Zero() : Async<unit option> = this.Return()
-  member this.ReturnFrom(x : Async<'a option>) = x
-  member this.Delay(f: unit ->  Async<'a option>) = async { return! f () }
-  member this.Bind(x :Async<'a option>, f : 'a -> Async<'b option>) : Async<'b option> = bind f x
-  member this.Bind(x :'a option, f : 'a -> Async<'b option>) : Async<'b option> = bind f (async.Return x)
+let fail<'a> : Alt<'a option> = Alt.always (Option<'a>.None)
 
-let asyncOption = AsyncOptionBuilder()
+/// Immediate routing miss. Not Hopac `Alt.never`, which hangs.
+let never : WebPart<'a> = fun _ -> fail
 
-let rec choose (options : WebPart<'a> list) : WebPart<'a> =
-  fun arg -> async {
-  match options with
-  | []        -> return None
-  | p :: tail ->
-    let! res = p arg
-    match res with
-    | Some x -> return Some x
-    | None   -> return! choose tail arg
-  }
+let ofJob (j : Job<'a option>) : Alt<'a option> =
+  Alt.prepareJob <| fun () -> Job.map Alt.always j
+
+let ofAsync (a : Async<'a option>) : Alt<'a option> =
+  Alt.fromAsync a
+
+let toAsync (x : Alt<'a>) : Async<'a> =
+  Job.toAsync (x :> Job<_>)
+
+let bind (f: 'a -> Alt<'b option>) (a: Alt<'a option>) : Alt<'b option> =
+  Alt.prepareJob <| fun () ->
+    job {
+      match! a with
+      | None -> return fail
+      | Some q -> return f q
+    }
+
+let compose (first : 'a -> Alt<'b option>) (second : 'b -> Alt<'c option>)
+            : 'a -> Alt<'c option> =
+  fun x -> bind second (first x)
+
+type WebPartBuilder() =
+  member this.Return(x:'a) : Alt<'a option> = succeed x
+  member this.Zero() : Alt<unit option> = this.Return()
+  member this.ReturnFrom(x : Alt<'a option>) = x
+  member this.Delay(f: unit -> Alt<'a option>) = Alt.prepareFun f
+  member this.Bind(x : Alt<'a option>, f : 'a -> Alt<'b option>) : Alt<'b option> = bind f x
+  member this.Bind(x : 'a option, f : 'a -> Alt<'b option>) : Alt<'b option> = bind f (Alt.always x)
+
+let webPart = WebPartBuilder()
+
+let rec fallback (options : WebPart<'a> list) : WebPart<'a> =
+  fun arg ->
+    match options with
+    | [] -> fail
+    | p :: tail ->
+      Alt.prepareJob <| fun () ->
+        job {
+          match! p arg with
+          | Some x -> return succeed x
+          | None -> return fallback tail arg
+        }
+
+let choose options = fallback options
 
 let rec inject (postOp : WebPart<'a>) (pairs : (WebPart<'a> * WebPart<'a>) list) : WebPart<'a> =
-  fun arg -> async {
+  fun arg ->
     match pairs with
-    | []        -> return None
+    | [] -> fail
     | (p,q) :: tail ->
-      let! res = p arg
-      match res with
-      | Some x ->
-        return! (compose postOp q) x
-      | None   -> return! inject postOp tail arg
-    }
+      Alt.prepareJob <| fun () ->
+        job {
+          match! p arg with
+          | Some x -> return (compose postOp q) x
+          | None -> return inject postOp tail arg
+        }
 
 let inline warbler f a = f a a
 
@@ -77,12 +80,12 @@ let cond item f g a =
 
 let inline tryThen (first : WebPart<'a>) (second : WebPart<'a>) : WebPart<'a> =
   fun x ->
-    async {
-      let! e = first x
-      match e with
-      | None -> return! second x
-      | r -> return r
-    }
+    Alt.prepareJob <| fun () ->
+      job {
+        match! first x with
+        | None -> return second x
+        | r -> return Alt.always r
+      }
 
 let inline concatenate first second = fun x ->
   match first x with

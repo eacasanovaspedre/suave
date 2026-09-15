@@ -9,6 +9,9 @@ opening a PR.
 Suave is an F# web server **library**, structured as a small monorepo of
 NuGet packages plus tests, examples, and a documentation website.
 
+`WebPart<'a>` is `'a -> Hopac.Alt<'a option>` (Hopac 0.5.1). Sequential
+routing is `fallback` / `choose`; I/O (`SocketOp`) remains `ValueTask`.
+
 - `src/Suave` — the core web server library.
 - `src/Suave.Json` — JSON helpers.
 - `src/Suave.DotLiquid` — DotLiquid view engine integration.

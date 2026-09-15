@@ -43,6 +43,7 @@ module Http2Demo.Program
 
 open System
 open System.Net
+open Hopac
 open System.Security.Cryptography
 open System.Security.Cryptography.X509Certificates
 open System.Text
@@ -208,12 +209,10 @@ let private tile (n: int) : WebPart =
 /// the wire while this stream sits idle.
 let private slow : WebPart =
   fun ctx ->
-    async {
-      do! Async.Sleep 500
-      return!
-        (setMimeType "text/plain; charset=utf-8"
-          >=> OK "slow: 500 ms elapsed before the body was queued") ctx
-    }
+    timeOutMillis 500
+    |> Alt.afterJob (fun () ->
+      (setMimeType "text/plain; charset=utf-8"
+        >=> OK "slow: 500 ms elapsed before the body was queued") ctx)
 
 /// /large — body larger than the default flow-control window.
 let private large : WebPart =
@@ -299,7 +298,7 @@ let main argv =
         cancellationToken = cts.Token }
 
   let ready, server = Web.startWebServerAsync cfg app
-  ready |> Async.RunSynchronously |> ignore
+  waitStarted ready |> ignore
 
   printfn ""
   printfn "Suave HTTP/2 demo listening on:"

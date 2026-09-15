@@ -2,6 +2,7 @@ module Suave.Tests.Cookie
 
 open Suave
 open Suave.Cookie
+open Hopac
 
 open Expecto
 
@@ -66,7 +67,7 @@ let parseResultCookie (_:SuaveConfig) =
       Expect.equal parsed cookie "eq"
 
     testCase "set cookie (same name) twice keeps last" <| fun _ ->
-      let force = Async.RunSynchronously >> Option.get
+      let force = Hopac.run >> Option.get
       let c1 = HttpCookie.createKV "a" "aa"
       let c2 = HttpCookie.createKV "a" "bb"
       let subject =

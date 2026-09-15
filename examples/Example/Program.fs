@@ -4,6 +4,7 @@ open System
 
 open Suave
 open Suave.Operators
+open Hopac
 open Suave.EventSource
 open Suave.Filters
 open Suave.Writers
@@ -38,10 +39,8 @@ let testApp =
 // How to write a new primitive WebPart
 let sleep (milliseconds:int) message: WebPart =
   fun (x : HttpContext) ->
-    async {
-      do! Async.Sleep milliseconds
-      return! OK message x
-      }
+    timeOutMillis milliseconds
+    |> Alt.afterJob (fun () -> OK message x)
 
 // Adds a new mime type to the default map
 let mimeTypes =
@@ -49,7 +48,7 @@ let mimeTypes =
     @@ (function | ".avi" -> Writers.createMimeType "video/avi" false | _ -> None)
 
 let unzipBody : WebPart =
-  fun ctx -> WebPart.asyncOption {
+  fun ctx -> webPart {
     if ctx.request.header "content-encoding" = Choice1Of2 "gzip" then
       return { ctx with request = { ctx.request with rawForm = Utils.Compression.gzipDecode ctx.request.rawForm} }
     else

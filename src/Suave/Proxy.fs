@@ -8,6 +8,7 @@ open Suave.Utils
 open Suave.Operators
 open Suave.Successful
 open Suave.Sockets
+open Hopac
 
 let private (?) headers (name : string)  =
   headers
@@ -99,7 +100,7 @@ let private httpResponseToHttpContext (ctx : HttpContext) (response : HttpRespon
 
 let proxy (newHost : Uri) : WebPart =
   (fun ctx ->
-    let work = task {
+    Alt.fromTask (fun ct -> task {
       let remappedAddress =
         if [ 80; 443 ] |> Seq.contains newHost.Port
         then
@@ -162,16 +163,13 @@ let proxy (newHost : Uri) : WebPart =
       try
         // `ResponseHeadersRead` keeps the body streaming instead of buffering it.
         // Non-2xx responses come back normally, so there is no error path to unwrap.
-        let! response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+        let! response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
         return httpResponseToHttpContext ctx response |> Some
       with
       // `HttpClient` surfaces connection failures as `HttpRequestException` /
       // `TaskCanceledException` and never exposes an error response object.
       | _ ->
-        return!
-          (
-            OK "Unable to proxy the request. "
-            >=> Writers.setStatus HTTP_502
-          ) ctx
-      }
-    Async.AwaitTask work)
+        return Hopac.run (
+          ((OK "Unable to proxy the request. " >=> Writers.setStatus HTTP_502) ctx)
+          :> Job<_>)
+      }))

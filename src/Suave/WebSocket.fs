@@ -13,6 +13,7 @@ module WebSocket =
   open System.Text
   open System.Threading
   open System.Threading.Tasks
+  open Hopac
 
   let magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -280,12 +281,11 @@ module WebSocket =
       do! continuation webSocket ctx
     }
 
-  let chooseSubprotocol (subprotocol : string) (requestSubprotocols : string []) (ctx : HttpContext) = async {
+  let chooseSubprotocol (subprotocol : string) (requestSubprotocols : string []) (_ctx : HttpContext) =
     if Array.exists ((=) subprotocol) requestSubprotocols then
-      return Some subprotocol
+      Alt.always (Some subprotocol)
     else
-      return None
-  }
+      Alt.always None
 
   let validateConnectionHeader (header:Choice<string,string>) =
     match header with
@@ -312,41 +312,33 @@ module WebSocket =
         Choice2Of2 (RequestErrors.BAD_REQUEST "Bad Request" ctx)
 
   /// The handShakeWithSubprotocol combinator captures a WebSocket and pass it to the provided `continuation`
-  let handShakeWithSubprotocol (choose : string [] -> HttpContext -> Async<string option>) (continuation : WebSocket -> HttpContext -> SocketOp<unit>) (ctx : HttpContext) =
-    async {
-      match validateHandShake ctx with
-      | Choice1Of2 webSocketKey ->
-        let! subprotocol =
-          match ctx.request.header "sec-websocket-protocol" with
-          | Choice1Of2 webSocketProtocol -> choose (webSocketProtocol.Split [|','|]) ctx
-          | _ -> async.Return None
-
-        let! a = (handShakeAux subprotocol webSocketKey continuation ctx).AsTask()
-        match a with
-        | Ok _ ->
-          do ()
-        | Result.Error err ->
-          do ()
-        return! Control.CLOSE ctx
-      | Choice2Of2 response -> return! response
-    }
+  let handShakeWithSubprotocol (choose : string [] -> HttpContext -> Alt<string option>) (continuation : WebSocket -> HttpContext -> SocketOp<unit>) (ctx : HttpContext) =
+    Alt.prepareJob <| fun () ->
+      job {
+        match validateHandShake ctx with
+        | Choice1Of2 webSocketKey ->
+          let! subprotocol =
+            match ctx.request.header "sec-websocket-protocol" with
+            | Choice1Of2 webSocketProtocol -> choose (webSocketProtocol.Split [|','|]) ctx
+            | _ -> Alt.always None
+          let! _ = Job.awaitTask ((handShakeAux subprotocol webSocketKey continuation ctx).AsTask())
+          return Control.CLOSE ctx
+        | Choice2Of2 response ->
+          return response
+      }
 
   /// The handShake combinator captures a WebSocket and pass it to the provided `continuation`
-  let handShakeTask (continuation : WebSocket -> HttpContext -> SocketOp<unit>) (ctx : HttpContext) = task {
-    match validateHandShake ctx with
-    | Choice1Of2 webSocketKey ->
-      let! a = (handShakeAux None webSocketKey continuation ctx).AsTask()
-      match a with
-      | Ok _ ->
-        do ()
-      | Result.Error err ->
-        Console.WriteLine($"WebSocket disconnected {err}",err)
-      return! Control.CLOSE ctx
-    | Choice2Of2 response ->
-      return! response
-  }
-
-  let handShake (continuation : WebSocket -> HttpContext -> SocketOp<unit>) (ctx : HttpContext) = async {
-    do! handShakeTask continuation ctx
-    return Some ctx
-  }
+  let handShake (continuation : WebSocket -> HttpContext -> SocketOp<unit>) (ctx : HttpContext) =
+    Alt.prepareJob <| fun () ->
+      job {
+        match validateHandShake ctx with
+        | Choice1Of2 webSocketKey ->
+          let! a = Job.awaitTask ((handShakeAux None webSocketKey continuation ctx).AsTask())
+          match a with
+          | Ok _ -> ()
+          | Result.Error err ->
+            Console.WriteLine($"WebSocket disconnected {err}",err)
+          return Control.CLOSE ctx
+        | Choice2Of2 response ->
+          return response
+      }

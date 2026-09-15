@@ -2,6 +2,7 @@ namespace Suave
 
 open System
 open System.Text.RegularExpressions
+open Hopac
 
 /// Input Validation Framework for Suave
 module Validation =
@@ -478,31 +479,31 @@ module Validation =
       | Choice1Of2 value -> Valid value
       | Choice2Of2 err -> Invalid [err]
 
-  // === Async Validators ===
+  // === Job Validators ===
 
-  /// Async validator type
-  type AsyncValidator<'T, 'U> = 'T -> Async<ValidationResult<'U>>
+  /// Hopac Job validator type
+  type JobValidator<'T, 'U> = 'T -> Job<ValidationResult<'U>>
 
-  /// Convert sync validator to async
-  let toAsync (validator: Validator<'T, 'U>) : AsyncValidator<'T, 'U> =
-    fun input -> async { return validator input }
+  /// Convert a sync validator to a Job
+  let toJob (validator: Validator<'T, 'U>) : JobValidator<'T, 'U> =
+    fun input -> Job.result (validator input)
 
-  /// Map over async validator
-  let mapAsync (f: 'U -> 'V) (validator: AsyncValidator<'T, 'U>) : AsyncValidator<'T, 'V> =
-    fun input -> async {
-      let! result = validator input
-      return
-        match result with
-        | Valid value -> Valid (f value)
-        | Invalid errors -> Invalid errors
-    }
+  /// Map over a Job validator
+  let mapJob (f: 'U -> 'V) (validator: JobValidator<'T, 'U>) : JobValidator<'T, 'V> =
+    fun input ->
+      job {
+        let! result = validator input
+        return
+          match result with
+          | Valid value -> Valid (f value)
+          | Invalid errors -> Invalid errors
+      }
 
-  /// Bind async validators
-  let bindAsync (f: 'U -> AsyncValidator<'T, 'V>) (validator: AsyncValidator<'T, 'U>) : AsyncValidator<'T, 'V> =
-    fun input -> async {
-      let! result = validator input
-      return!
-        match result with
-        | Valid value -> f value input
-        | Invalid errors -> async { return Invalid errors }
-    }
+  /// Bind Job validators
+  let bindJob (f: 'U -> JobValidator<'T, 'V>) (validator: JobValidator<'T, 'U>) : JobValidator<'T, 'V> =
+    fun input ->
+      job {
+        match! validator input with
+        | Valid value -> return! f value input
+        | Invalid errors -> return Invalid errors
+      }

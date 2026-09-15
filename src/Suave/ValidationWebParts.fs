@@ -8,13 +8,13 @@ module ValidationWebParts =
 
   /// Extract and validate a form field
   let validateFormField (fieldName: string) (validator: Validator<string, 'T>) : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
       match ctx.request.formData fieldName with
       | Choice1Of2 value ->
           match validator value with
           | Valid result ->
               ctx.userState.[fieldName] <- box result
-              return Some ctx
+              return ctx
           | Invalid errors ->
               let errorMsg = errors |> List.map (fun e -> e.message) |> String.concat "; "
               return! RequestErrors.BAD_REQUEST errorMsg ctx
@@ -24,13 +24,13 @@ module ValidationWebParts =
 
   /// Extract and validate a query parameter
   let validateQueryParam (paramName: string) (validator: Validator<string, 'T>) : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
       match ctx.request.queryParam paramName with
       | Choice1Of2 value ->
           match validator value with
           | Valid result ->
               ctx.userState.[paramName] <- box result
-              return Some ctx
+              return ctx
           | Invalid errors ->
               let errorMsg = errors |> List.map (fun e -> e.message) |> String.concat "; "
               return! RequestErrors.BAD_REQUEST errorMsg ctx
@@ -40,13 +40,13 @@ module ValidationWebParts =
 
   /// Extract and validate a header
   let validateHeader (headerName: string) (validator: Validator<string, 'T>) : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
       match ctx.request.header headerName with
       | Choice1Of2 value ->
           match validator value with
           | Valid result ->
               ctx.userState.[headerName] <- box result
-              return Some ctx
+              return ctx
           | Invalid errors ->
               let errorMsg = errors |> List.map (fun e -> e.message) |> String.concat "; "
               return! RequestErrors.BAD_REQUEST errorMsg ctx
@@ -62,7 +62,7 @@ module ValidationWebParts =
 
   /// Build a form validator that validates multiple fields and constructs a result
   let validateForm (fieldValidators: (string * Validator<string, 'T>) list) (constructor: obj list -> 'U) : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
       let results =
         fieldValidators
         |> List.map (fun (fieldName, validator) ->
@@ -82,7 +82,7 @@ module ValidationWebParts =
         let values = results |> List.choose (function Choice1Of2 v -> Some v | _ -> None)
         let result = constructor values
         ctx.userState.["validatedForm"] <- box result
-        return Some ctx
+        return ctx
       else
         let errorMsg =
           errors
@@ -100,7 +100,7 @@ module ValidationWebParts =
 
   /// Validate request with custom validator and error handler
   let validateRequest (validator: HttpRequest -> ValidationResult<'T>) (onValid: 'T -> WebPart) (onInvalid: ValidationError list -> WebPart) : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
       match validator ctx.request with
       | Valid result -> return! onValid result ctx
       | Invalid errors -> return! onInvalid errors ctx
@@ -159,11 +159,11 @@ module ValidationWebParts =
 
   /// Create a middleware that validates and stores result in userState
   let middleware (key: string) (validator: HttpRequest -> ValidationResult<'T>) : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
       match validator ctx.request with
       | Valid result ->
           ctx.userState.[key] <- box result
-          return Some ctx
+          return ctx
       | Invalid errors ->
           let errorMsg =
             errors
@@ -174,7 +174,7 @@ module ValidationWebParts =
 
   /// Combine multiple validation middlewares
   let validateAll (validators: (string * (HttpRequest -> ValidationResult<obj>)) list) : WebPart =
-    fun ctx -> async {
+    fun ctx -> webPart {
       let results =
         validators
         |> List.map (fun (key, validator) ->
@@ -191,7 +191,7 @@ module ValidationWebParts =
         results
         |> List.choose (function Choice1Of2 (k, v) -> Some (k, v) | _ -> None)
         |> List.iter (fun (k, v) -> ctx.userState.[k] <- v)
-        return Some ctx
+        return ctx
       else
         let errorMsg =
           errors

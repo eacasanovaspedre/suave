@@ -41,7 +41,7 @@ let main argv =
   let listening, server = startWebServerAsync config app
 
   // wait for the server to start listening
-  listening |> Async.RunSynchronously |> (fun s -> printfn $"start stats: {s}")
+  waitStarted listening |> (fun s -> printfn $"start stats: {s}")
 
   // launch httperf
   let output = execute "httperf" ($"--hog --server=localhost --port={port} --uri=/ --rate=20 --num-conns=100 --num-calls=1000 --burst-length=10")

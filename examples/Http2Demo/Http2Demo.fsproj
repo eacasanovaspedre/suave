@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Suave\Suave.fsproj" />
+    <PackageReference Include="Hopac" Version="0.5.1" />
   </ItemGroup>
 
 </Project>

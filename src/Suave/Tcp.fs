@@ -10,6 +10,7 @@ open Suave.Sockets
 open Suave.Utils
 open Suave
 open System.Threading.Tasks
+open Hopac
 
 /// The max backlog of number of requests
 [<Literal>]
@@ -79,7 +80,9 @@ let createConnection listenSocket binding cancellationToken bufferSize =
       lineBuffer    = lineBuffer;
       lineBufferCount = 0;
       utf8Encoder = System.Text.Encoding.UTF8.GetEncoder();
-      isLongLived = false }
+      isLongLived = false;
+      abort = IVar();
+      abortCts = new Threading.CancellationTokenSource() }
 
 let createConnectionFacade tracker connectionPool listenSocket binding (runtime: HttpRuntime) cancellationToken bufferSize webpart =
   let connection = createConnection listenSocket binding cancellationToken bufferSize
@@ -358,7 +361,7 @@ let runServerEx acceptorCount maxConcurrentOps bufferSize (binding: SocketBindin
       let startData =
         { startData with socketBoundUtc = Some (Globals.utcNow()); binding = _binding }
 
-      acceptingConnections.complete startData |> ignore
+      acceptingConnections.complete startData
 
       let startedListeningMilliseconds = startData.GetStartedListeningElapsedMilliseconds()
       let ipAddress = startData.binding.ip.ToString()
