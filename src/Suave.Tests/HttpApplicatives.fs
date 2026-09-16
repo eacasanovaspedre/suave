@@ -13,6 +13,7 @@ open Suave.Tests.TestUtilities
 open Suave.Testing
 
 open Expecto
+open Hopac
 
 [<Tests>]
 let applicativeTests cfg =
@@ -44,4 +45,22 @@ let applicativeTests cfg =
 
       let res = runWithConfig app |> req HttpMethod.GET "/" None
       Expect.equal res ip "Should be what the config says the IP is"
+    ]
+
+[<Tests>]
+let ofJobTests =
+  testList "ofJob" [
+    testCase "returns the job result" <| fun _ ->
+      let r = Hopac.run (ofJob (Job.result (Some 42)))
+      Expect.equal r (Some 42) "ofJob should yield the job's value"
+
+    testCase "does not commit during prepare; ready Alt wins choose" <| fun _ ->
+      let sw = Diagnostics.Stopwatch.StartNew()
+      let slow = ofJob (Job.map (fun () -> Some "slow") (timeOutMillis 500))
+      let winner = Hopac.run (Alt.choose [ slow; Alt.always (Some "fast") ])
+      sw.Stop()
+      Expect.equal winner (Some "fast")
+        "Alt.always must win; wrapping the job in Alt.always inside prepare commits too soon"
+      Expect.isLessThan sw.ElapsedMilliseconds 200L
+        "must not wait for the slow job inside prepareJob"
     ]

@@ -13,8 +13,7 @@ let fail<'a> : Alt<'a option> = Alt.always (Option<'a>.None)
 /// Immediate routing miss. Not Hopac `Alt.never`, which hangs.
 let never : WebPart<'a> = fun _ -> fail
 
-let ofJob (j : Job<'a option>) : Alt<'a option> =
-  Alt.prepareJob <| fun () -> Job.map Alt.always j
+let ofJob (j : Job<'a option>) : Alt<'a option> = Alt.prepare (Promise.start j)
 
 let ofAsync (a : Async<'a option>) : Alt<'a option> =
   Alt.fromAsync a

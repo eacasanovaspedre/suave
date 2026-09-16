@@ -29,6 +29,8 @@ val bind : f:('a -> Alt<'b option>) -> a:Alt<'a option> -> Alt<'b option>
 val compose : first:('a -> Alt<'b option>) -> second:('b -> Alt<'c option>) -> 'a -> Alt<'c option>
 
 /// Lift a Job of option into a WebPart result.
+/// Starts the job concurrently (`Promise.start`) so the Alt stays uncommitted
+/// and can lose `Alt.choose`. Jobs are not cancellable; a nacked job still runs.
 val ofJob : Job<'a option> -> Alt<'a option>
 
 /// Lift an F# Async of option into a WebPart result (cancellable via Alt).
